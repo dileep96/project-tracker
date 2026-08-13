@@ -30,7 +30,11 @@ function AddDependencyPopover({ taskId }: { taskId: string }) {
   }, [allTasks, query, taskId]);
 
   async function pick(dependsOnTaskId: string) {
-    await addDependency(taskId, dependsOnTaskId, type);
+    const result = await addDependency(taskId, dependsOnTaskId, type);
+    if (!result.ok) {
+      toast.error(result.reason);
+      return;
+    }
     toast.success("Dependency added");
     setQuery("");
     setOpen(false);

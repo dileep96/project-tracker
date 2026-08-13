@@ -1,9 +1,19 @@
 import { useCallback, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
-import { ArrowLeft, PencilSimple, Plus, Trash } from "@phosphor-icons/react";
+import {
+  ArrowLeft,
+  CalendarBlank,
+  ChartBarHorizontal,
+  Kanban,
+  PencilSimple,
+  Plus,
+  Trash,
+} from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
+import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ConfirmDeleteDialog } from "@/components/ui/ConfirmDeleteDialog";
 import { HealthBadge } from "@/components/projects/HealthBadge";
 import { ProjectFormDialog } from "@/components/projects/ProjectFormDialog";
@@ -66,7 +76,32 @@ export function ProjectDetailPage() {
           {project.description && <p className="mt-1.5 max-w-2xl text-sm text-muted-foreground">{project.description}</p>}
           {project.owner && <p className="mt-1 text-xs text-muted-foreground">Owner: {project.owner}</p>}
         </div>
-        <div className="flex shrink-0 gap-2">
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="outline" size="icon-sm" aria-label="Board" onClick={() => navigate(`/projects/${project.id}/board`)}>
+                <Kanban />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Board</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="outline" size="icon-sm" aria-label="Gantt" onClick={() => navigate(`/projects/${project.id}/gantt`)}>
+                <ChartBarHorizontal />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Gantt</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="outline" size="icon-sm" aria-label="Calendar" onClick={() => navigate(`/projects/${project.id}/calendar`)}>
+                <CalendarBlank />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Calendar</TooltipContent>
+          </Tooltip>
+          <Separator orientation="vertical" className="mx-0.5 h-5" />
           <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
             <PencilSimple /> Edit
           </Button>

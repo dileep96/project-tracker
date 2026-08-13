@@ -59,6 +59,12 @@ export interface Task {
   /** FK -> Milestone.id, optional. */
   milestoneId: string | null;
   isRecurring: boolean;
+  /**
+   * FK -> Task.id of the recurring "template" task this instance was generated from, or null for
+   * a normal task (including the template itself — the template keeps isRecurring/its rule, its
+   * generated instances do not). Added in schema v2; see README's recurring-generation section.
+   */
+  recurrenceParentId: string | null;
   createdAt: number;
   updatedAt: number;
   completedAt: number | null;
@@ -200,6 +206,25 @@ class ProjectTrackerDB extends Dexie {
       recurrenceRules: "id, &taskId",
       milestones: "id, projectId, targetDate",
     });
+
+    // v2 (Phase 2): recurring-task generation needs to find a template task's already-generated
+    // instances, so `tasks` gains an indexed self-FK. Existing rows predate the field entirely
+    // (IndexedDB has no column default), so the upgrade backfills it to null explicitly rather
+    // than leaving it `undefined` — see README's Dexie schema section for why this is a new
+    // version instead of an edit to version 1.
+    this.version(2)
+      .stores({
+        tasks:
+          "id, projectId, statusId, priority, dueDate, startDate, createdAt, completedAt, milestoneId, recurrenceParentId, *tags",
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table("tasks")
+          .toCollection()
+          .modify((task) => {
+            if (task.recurrenceParentId === undefined) task.recurrenceParentId = null;
+          });
+      });
   }
 }
 

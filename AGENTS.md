@@ -7,8 +7,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 ## Start here
 
 Read `README.md` first — it covers running the app, the design system, the
-full Dexie schema (version 1) table-by-table, and known trade-offs. This
-file only adds what isn't already there.
+full Dexie schema (version 2) table-by-table, the four Phase 2 views
+(Kanban/Gantt/Calendar/Timeline), the recurring-task generation mechanism,
+and known trade-offs. This file only adds what isn't already there.
 
 ## Sharp edges
 
@@ -25,10 +26,24 @@ file only adds what isn't already there.
   `flex-1` children. Use a plain `<div className="overflow-y-auto">` with
   an explicit height instead (see `TaskDetailSheet`).
 - Dexie schema changes belong in a new `db.version(N).stores({...})` call in
-  `src/lib/db.ts`, never an edit to version 1 — see README's Dexie section.
+  `src/lib/db.ts`, never an edit to an existing version (currently 2) — see
+  README's Dexie section.
 - IndexedDB has no cascading deletes. Any new table with a foreign key into
   `projects` or `tasks` needs its cleanup wired into `deleteProject`/
-  `deleteTask` in `src/lib/queries/`.
+  `deleteTask` in `src/lib/queries/`. Same goes for the self-referencing FK
+  `Task.recurrenceParentId` — `deleteTask` already cascades template ->
+  generated instances; extend that helper, don't add a second deletion path.
+- Setting only `overflow-x` on a scroll container doesn't leave `overflow-y`
+  at `visible` — per the CSS overflow spec, pairing a non-`visible` axis
+  with `visible` on the other silently promotes the `visible` one to
+  `auto`, so an `overflow-x-auto` pane still clips/scrolls vertically the
+  moment its content overflows, fighting a sticky header inside it. Gantt
+  and Timeline (`components/gantt`, `components/timeline`) sidestep this
+  with one explicit `max-h-[Npx] overflow-auto` container for both axes
+  together (a real frozen-header/frozen-column data grid) instead of
+  trying to keep horizontal scroll local and vertical scroll on the page.
+  Reach for the same pattern before inventing another one for a future
+  dense grid (e.g. the analytics dashboard).
 
 ## Maintaining this file
 

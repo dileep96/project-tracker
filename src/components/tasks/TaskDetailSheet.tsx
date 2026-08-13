@@ -162,7 +162,11 @@ export function TaskDetailSheet({ taskId, onClose }: { taskId: string | null; on
                 </TabsContent>
 
                 <TabsContent value="repeat" className="px-4 py-4">
-                  <RecurrencePanel taskId={task.id} isRecurring={task.isRecurring} />
+                  <RecurrencePanel
+                    taskId={task.id}
+                    isRecurring={task.isRecurring}
+                    hasDate={task.startDate !== null || task.dueDate !== null}
+                  />
                 </TabsContent>
               </div>
             </Tabs>

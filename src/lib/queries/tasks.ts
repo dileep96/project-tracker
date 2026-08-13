@@ -9,6 +9,7 @@ import {
   type TaskPriority,
 } from "@/lib/db";
 import { generateId, now } from "@/lib/ids";
+import { normalizeDependencyEdges, wouldCreateCycle } from "@/lib/dependency-graph";
 
 export interface CreateTaskInput {
   projectId: string;
@@ -21,6 +22,8 @@ export interface CreateTaskInput {
   assignee?: string;
   tags?: string[];
   milestoneId?: string | null;
+  /** Set only by the recurrence generator when cloning a new occurrence. */
+  recurrenceParentId?: string | null;
 }
 
 export async function createTask(input: CreateTaskInput): Promise<Task> {
@@ -38,6 +41,7 @@ export async function createTask(input: CreateTaskInput): Promise<Task> {
     tags: input.tags ?? [],
     milestoneId: input.milestoneId ?? null,
     isRecurring: false,
+    recurrenceParentId: input.recurrenceParentId ?? null,
     createdAt: timestamp,
     updatedAt: timestamp,
     completedAt: null,
@@ -55,18 +59,31 @@ export async function setTaskCompleted(id: string, completed: boolean): Promise<
   await db.tasks.update(id, { completedAt: completed ? now() : null, updatedAt: now() });
 }
 
+/**
+ * Deletes a task and, when it's a recurrence template, every instance generated from it too —
+ * otherwise those instances would keep pointing at a `recurrenceParentId` that no longer exists.
+ * Generated instances never have instances of their own, so this recurses at most one level.
+ */
 export async function deleteTask(id: string): Promise<void> {
+  const instanceIds = await db.tasks.where("recurrenceParentId").equals(id).primaryKeys();
+  await cascadeDeleteTasks([id, ...(instanceIds as string[])]);
+}
+
+async function cascadeDeleteTasks(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
   await db.transaction(
     "rw",
     [db.tasks, db.subtasks, db.attachments, db.customFieldValues, db.taskDependencies, db.recurrenceRules],
     async () => {
-      await db.subtasks.where("taskId").equals(id).delete();
-      await db.attachments.where("taskId").equals(id).delete();
-      await db.customFieldValues.where("taskId").equals(id).delete();
-      await db.taskDependencies.where("taskId").equals(id).delete();
-      await db.taskDependencies.where("dependsOnTaskId").equals(id).delete();
-      await db.recurrenceRules.where("taskId").equals(id).delete();
-      await db.tasks.delete(id);
+      for (const id of ids) {
+        await db.subtasks.where("taskId").equals(id).delete();
+        await db.attachments.where("taskId").equals(id).delete();
+        await db.customFieldValues.where("taskId").equals(id).delete();
+        await db.taskDependencies.where("taskId").equals(id).delete();
+        await db.taskDependencies.where("dependsOnTaskId").equals(id).delete();
+        await db.recurrenceRules.where("taskId").equals(id).delete();
+      }
+      await db.tasks.bulkDelete(ids);
     }
   );
 }
@@ -110,10 +127,30 @@ export async function listDependenciesForTask(taskId: string): Promise<TaskDepen
   return db.taskDependencies.where("taskId").equals(taskId).toArray();
 }
 
-export async function addDependency(taskId: string, dependsOnTaskId: string, type: DependencyType): Promise<TaskDependency> {
+export type AddDependencyResult = { ok: true; dependency: TaskDependency } | { ok: false; reason: string };
+
+/**
+ * Rejects self-dependencies and anything that would close a cycle in the cross-project
+ * precedence graph (dependencies aren't project-scoped, so the check runs over every
+ * dependency row, not just this task's own). The Gantt critical-path pass assumes an acyclic
+ * graph — this is what keeps that assumption true instead of it silently producing nonsense.
+ */
+export async function addDependency(
+  taskId: string,
+  dependsOnTaskId: string,
+  type: DependencyType
+): Promise<AddDependencyResult> {
+  if (taskId === dependsOnTaskId) {
+    return { ok: false, reason: "A task can't depend on itself." };
+  }
+  const [predecessorId, successorId] = type === "blocked-by" ? [dependsOnTaskId, taskId] : [taskId, dependsOnTaskId];
+  const existingEdges = normalizeDependencyEdges(await db.taskDependencies.toArray());
+  if (wouldCreateCycle(existingEdges, predecessorId, successorId)) {
+    return { ok: false, reason: "That would create a circular dependency." };
+  }
   const row: TaskDependency = { id: generateId(), taskId, dependsOnTaskId, type, createdAt: now() };
   await db.taskDependencies.add(row);
-  return row;
+  return { ok: true, dependency: row };
 }
 
 export async function removeDependency(id: string): Promise<void> {

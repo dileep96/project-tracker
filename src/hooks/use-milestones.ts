@@ -8,3 +8,11 @@ export function useMilestones(projectId: string | undefined): Milestone[] | unde
     return rows.sort((a, b) => a.targetDate - b.targetDate);
   }, [projectId]);
 }
+
+/** Every milestone across every project — what the portfolio Timeline needs to plot markers per band. */
+export function useAllMilestones(): Milestone[] | undefined {
+  return useLiveQuery(async () => {
+    const rows = await db.milestones.toArray();
+    return rows.sort((a, b) => a.targetDate - b.targetDate);
+  }, []);
+}

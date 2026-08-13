@@ -20,9 +20,11 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { label: "Projects", to: "/projects", icon: FolderOpen },
   { label: "All Tasks", to: "/tasks", icon: ListChecks },
-  { label: "Board", icon: Kanban, comingSoon: true },
-  { label: "Gantt", icon: ChartBarHorizontal, comingSoon: true },
-  { label: "Calendar", icon: CalendarBlank, comingSoon: true },
-  { label: "Timeline", icon: ClockCountdown, comingSoon: true },
+  // Board and Gantt are inherently per-project routes; these land on a project picker first
+  // (see ProjectPickerPage) since the sidebar has no project context of its own.
+  { label: "Board", to: "/board", icon: Kanban },
+  { label: "Gantt", to: "/gantt", icon: ChartBarHorizontal },
+  { label: "Calendar", to: "/calendar", icon: CalendarBlank },
+  { label: "Timeline", to: "/timeline", icon: ClockCountdown },
   { label: "Dashboard", icon: ChartPieSlice, comingSoon: true },
 ];

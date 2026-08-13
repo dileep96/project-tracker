@@ -1,10 +1,12 @@
 import { useState } from "react";
+import { toast } from "sonner";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useRecurrenceRule } from "@/hooks/use-task-detail";
 import { clearRecurrence, setRecurrence } from "@/lib/queries/tasks";
+import { generateRecurringInstancesForTask, RECURRENCE_LOOKAHEAD_DAYS } from "@/lib/recurrence";
 import type { RecurrenceEndType, RecurrenceFrequency } from "@/lib/db";
 
 const FREQUENCY_LABELS: Record<RecurrenceFrequency, string> = {
@@ -14,12 +16,28 @@ const FREQUENCY_LABELS: Record<RecurrenceFrequency, string> = {
   yearly: "Year",
 };
 
-export function RecurrencePanel({ taskId, isRecurring }: { taskId: string; isRecurring: boolean }) {
+export function RecurrencePanel({
+  taskId,
+  isRecurring,
+  hasDate,
+}: {
+  taskId: string;
+  isRecurring: boolean;
+  /** Whether the task has a start or due date to generate future occurrences from. */
+  hasDate: boolean;
+}) {
   const rule = useRecurrenceRule(taskId);
   const [endDateDraft, setEndDateDraft] = useState("");
 
+  /** Generates upcoming instances right away so toggling recurrence on shows a result immediately, instead of waiting for the next app load's background pass (see src/lib/recurrence.ts). */
+  async function generateNow() {
+    const created = await generateRecurringInstancesForTask(taskId);
+    if (created > 0) toast.success(`Generated ${created} upcoming occurrence${created === 1 ? "" : "s"}`);
+  }
+
   async function enable() {
     await setRecurrence(taskId, { frequency: "weekly", interval: 1, endType: "never" });
+    await generateNow();
   }
 
   async function update(patch: Partial<{ frequency: RecurrenceFrequency; interval: number; endType: RecurrenceEndType; endDate: number | null; endCount: number | null }>) {
@@ -31,6 +49,7 @@ export function RecurrencePanel({ taskId, isRecurring }: { taskId: string; isRec
       endDate: "endDate" in patch ? patch.endDate ?? null : rule.endDate,
       endCount: "endCount" in patch ? patch.endCount ?? null : rule.endCount,
     });
+    await generateNow();
   }
 
   return (
@@ -39,7 +58,7 @@ export function RecurrencePanel({ taskId, isRecurring }: { taskId: string; isRec
         <div>
           <p className="text-sm font-medium">Make recurring</p>
           <p className="text-xs text-muted-foreground">
-            Saves the repeat rule. Generating future instances arrives in a later phase.
+            Auto-generates upcoming copies of this task up to {RECURRENCE_LOOKAHEAD_DAYS} days ahead.
           </p>
         </div>
         <Switch
@@ -47,6 +66,12 @@ export function RecurrencePanel({ taskId, isRecurring }: { taskId: string; isRec
           onCheckedChange={(checked) => (checked ? enable() : clearRecurrence(taskId))}
         />
       </div>
+
+      {isRecurring && !hasDate && (
+        <p className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
+          Set a start or due date above to generate occurrences — there's nothing to repeat from yet.
+        </p>
+      )}
 
       {isRecurring && rule && (
         <div className="flex flex-col gap-3 rounded-md border border-border p-3">

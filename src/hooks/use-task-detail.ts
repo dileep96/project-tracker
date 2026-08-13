@@ -24,6 +24,11 @@ export function useDependencies(taskId: string | undefined): TaskDependency[] | 
   );
 }
 
+/** Every dependency row, across every project — the Kanban blocked-badge and Gantt link/critical-path calc both need the full graph, not just one task's edges. */
+export function useAllDependencies(): TaskDependency[] | undefined {
+  return useLiveQuery(() => db.taskDependencies.toArray(), []);
+}
+
 export function useRecurrenceRule(taskId: string | undefined): RecurrenceRule | undefined {
   return useLiveQuery(
     () => (taskId ? db.recurrenceRules.where("taskId").equals(taskId).first() : undefined),
