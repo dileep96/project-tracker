@@ -1,0 +1,206 @@
+import Dexie, { type EntityTable } from "dexie";
+
+/**
+ * ---------------------------------------------------------------------------
+ * Domain types
+ * ---------------------------------------------------------------------------
+ * These mirror the Dexie schema below. Every record carries plain epoch-ms
+ * timestamps (not Date objects) so IndexedDB indexes on them sort correctly
+ * and Phase 3's analytics dashboard can aggregate by date without conversion.
+ */
+
+export type ProjectHealth = "green" | "amber" | "red";
+
+export interface Project {
+  id: string;
+  name: string;
+  description: string;
+  /** Free text — no multi-user auth in this phase. */
+  owner: string;
+  /** Free text with suggested defaults (see PROJECT_STATUS_SUGGESTIONS); not a fixed enum. */
+  status: string;
+  health: ProjectHealth;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/**
+ * A project's own task workflow (e.g. "To Do" / "In Progress" / "Done").
+ * Each project owns its own ordered list, seeded with a default set on
+ * project creation and fully editable afterward. Tasks reference the
+ * status's `id`, not its name, so renaming a status never orphans data —
+ * and this table doubles as the column model Phase 2's Kanban board reads.
+ */
+export interface TaskStatus {
+  id: string;
+  projectId: string;
+  name: string;
+  order: number;
+  isDefault: boolean;
+  createdAt: number;
+}
+
+export type TaskPriority = "low" | "medium" | "high" | "urgent";
+
+export interface Task {
+  id: string;
+  projectId: string;
+  title: string;
+  description: string;
+  priority: TaskPriority;
+  /** Epoch ms, or null when unset. */
+  startDate: number | null;
+  dueDate: number | null;
+  /** FK -> TaskStatus.id (always scoped to this task's own projectId). */
+  statusId: string;
+  /** Free text, filterable — no multi-user auth in this phase. */
+  assignee: string;
+  tags: string[];
+  /** FK -> Milestone.id, optional. */
+  milestoneId: string | null;
+  isRecurring: boolean;
+  createdAt: number;
+  updatedAt: number;
+  completedAt: number | null;
+}
+
+export interface Subtask {
+  id: string;
+  taskId: string;
+  text: string;
+  done: boolean;
+  order: number;
+}
+
+export type CustomFieldType = "text" | "number" | "date" | "select" | "checkbox";
+
+export interface CustomFieldDef {
+  id: string;
+  /** null = available on every project; otherwise scoped to one project. */
+  projectId: string | null;
+  name: string;
+  type: CustomFieldType;
+  /** Only used when type === "select". */
+  options: string[] | null;
+  order: number;
+  createdAt: number;
+}
+
+/** One value per (task, field) pair. Value is always stored as a string and parsed per field type on read. */
+export interface CustomFieldValue {
+  id: string;
+  taskId: string;
+  fieldId: string;
+  value: string;
+}
+
+export interface Attachment {
+  id: string;
+  taskId: string;
+  filename: string;
+  mimeType: string;
+  blob: Blob;
+  size: number;
+  createdAt: number;
+}
+
+export type DependencyType = "blocks" | "blocked-by";
+
+/**
+ * dependsOnTaskId intentionally has no project-scoping constraint — a task
+ * may depend on a task that lives in a different project entirely.
+ */
+export interface TaskDependency {
+  id: string;
+  taskId: string;
+  dependsOnTaskId: string;
+  type: DependencyType;
+  createdAt: number;
+}
+
+export type RecurrenceFrequency = "daily" | "weekly" | "monthly" | "yearly";
+export type RecurrenceEndType = "never" | "onDate" | "afterCount";
+
+/**
+ * The rule is stored in full from Phase 1 on; only *generating* recurring
+ * task instances from it is deferred to Phase 2, so this table needs no
+ * breaking migration later.
+ */
+export interface RecurrenceRule {
+  id: string;
+  taskId: string;
+  frequency: RecurrenceFrequency;
+  interval: number;
+  endType: RecurrenceEndType;
+  endDate: number | null;
+  endCount: number | null;
+  createdAt: number;
+}
+
+export type MilestoneStatus = "upcoming" | "at-risk" | "completed" | "missed";
+
+export interface Milestone {
+  id: string;
+  projectId: string;
+  name: string;
+  targetDate: number;
+  status: MilestoneStatus;
+  createdAt: number;
+}
+
+/** Suggested defaults surfaced in the UI; the field itself stays free text. */
+export const PROJECT_STATUS_SUGGESTIONS = [
+  "Planning",
+  "Active",
+  "On Hold",
+  "Completed",
+  "Archived",
+] as const;
+
+export const DEFAULT_TASK_STATUSES = ["To Do", "In Progress", "Done"] as const;
+
+export const TASK_PRIORITIES: TaskPriority[] = ["low", "medium", "high", "urgent"];
+
+/**
+ * ---------------------------------------------------------------------------
+ * Database
+ * ---------------------------------------------------------------------------
+ * Schema versioning starts at version(1) deliberately: every later phase
+ * (Board/Gantt/Calendar/Timeline, analytics, resource tracking, automation,
+ * collaboration, templates) adds or reshapes tables, and each of those
+ * changes should land as a new `db.version(N).stores({...})` call with an
+ * `.upgrade()` migration where data needs transforming — never a hand edit
+ * of version 1. See README.md for the migration workflow.
+ */
+class ProjectTrackerDB extends Dexie {
+  projects!: EntityTable<Project, "id">;
+  taskStatuses!: EntityTable<TaskStatus, "id">;
+  tasks!: EntityTable<Task, "id">;
+  subtasks!: EntityTable<Subtask, "id">;
+  customFieldDefs!: EntityTable<CustomFieldDef, "id">;
+  customFieldValues!: EntityTable<CustomFieldValue, "id">;
+  attachments!: EntityTable<Attachment, "id">;
+  taskDependencies!: EntityTable<TaskDependency, "id">;
+  recurrenceRules!: EntityTable<RecurrenceRule, "id">;
+  milestones!: EntityTable<Milestone, "id">;
+
+  constructor() {
+    super("project-tracker");
+
+    this.version(1).stores({
+      projects: "id, status, health, createdAt, updatedAt",
+      taskStatuses: "id, projectId, order",
+      tasks:
+        "id, projectId, statusId, priority, dueDate, startDate, createdAt, completedAt, milestoneId, *tags",
+      subtasks: "id, taskId, order",
+      customFieldDefs: "id, projectId",
+      customFieldValues: "id, taskId, fieldId, [taskId+fieldId]",
+      attachments: "id, taskId, createdAt",
+      taskDependencies: "id, taskId, dependsOnTaskId",
+      recurrenceRules: "id, &taskId",
+      milestones: "id, projectId, targetDate",
+    });
+  }
+}
+
+export const db = new ProjectTrackerDB();
