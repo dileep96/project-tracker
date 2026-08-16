@@ -66,6 +66,18 @@
   --color-health-red-bg: var(--health-red-bg);
   --color-health-red-fg: var(--health-red-fg);
 
+  /* Sequential teal ramp (Phase 3 analytics): one hue, light->dark, anchored on the brand
+     accent's own hue (186/185) rather than a charting-library default — see AGENTS.md's
+     dataviz palette note. Used for heatmap cell intensity, progress fills, and single-series
+     chart marks. Steps 100 (near-surface, "no/low value") through 700 (max value). */
+  --color-chart-seq-100: var(--chart-seq-100);
+  --color-chart-seq-200: var(--chart-seq-200);
+  --color-chart-seq-300: var(--chart-seq-300);
+  --color-chart-seq-400: var(--chart-seq-400);
+  --color-chart-seq-500: var(--chart-seq-500);
+  --color-chart-seq-600: var(--chart-seq-600);
+  --color-chart-seq-700: var(--chart-seq-700);
+
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -118,6 +130,17 @@
   --health-amber-fg: oklch(0.42 0.11 70);
   --health-red-bg: oklch(0.94 0.045 25);
   --health-red-fg: oklch(0.45 0.15 25);
+
+  /* Sequential teal ramp, light mode — hue held constant at 186 (the app's own --primary hue),
+     lightness stepping 0.95 -> 0.30. The lightest step is allowed to recede toward the surface
+     (it means "near zero"); see dataviz skill's sequential-ramp rule in AGENTS.md. */
+  --chart-seq-100: oklch(0.95 0.025 186);
+  --chart-seq-200: oklch(0.88 0.045 186);
+  --chart-seq-300: oklch(0.78 0.075 186);
+  --chart-seq-400: oklch(0.66 0.105 186);
+  --chart-seq-500: oklch(0.52 0.13 186);
+  --chart-seq-600: oklch(0.4 0.115 186);
+  --chart-seq-700: oklch(0.3 0.095 186);
 }
 
 .dark {
@@ -163,6 +186,19 @@
   --health-amber-fg: oklch(0.8 0.13 75);
   --health-red-bg: oklch(0.28 0.06 25);
   --health-red-fg: oklch(0.78 0.15 25);
+
+  /* Sequential teal ramp, dark mode — anchor flips (per the dataviz skill's sequential-ramp
+     rule): the low-value step sits near the dark surface and lightness climbs toward the
+     high-value step, instead of just inverting the light-mode steps. Step 700 lands close to
+     the app's own dark-mode --primary (oklch(0.75 0.13 185)) so the brand accent and "maximum
+     value" read as the same color. */
+  --chart-seq-100: oklch(0.26 0.02 185);
+  --chart-seq-200: oklch(0.32 0.045 185);
+  --chart-seq-300: oklch(0.4 0.07 185);
+  --chart-seq-400: oklch(0.5 0.1 185);
+  --chart-seq-500: oklch(0.6 0.13 185);
+  --chart-seq-600: oklch(0.68 0.15 185);
+  --chart-seq-700: oklch(0.78 0.135 185);
 }
 
 @layer base {

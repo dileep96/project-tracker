@@ -154,6 +154,31 @@ export interface Milestone {
   createdAt: number;
 }
 
+/**
+ * The Phase 3 report builder's filter state, persisted verbatim so a saved view reproduces the
+ * exact same task subset on reload. `null` means "no constraint" for every field — never an
+ * empty-string sentinel — so a saved view survives a status/tag being renamed or removed without
+ * silently matching everything.
+ */
+export interface ReportFilters {
+  projectId: string | null;
+  statusName: string | null;
+  priority: TaskPriority | null;
+  assignee: string | null;
+  dateField: "dueDate" | "startDate" | "createdAt" | "completedAt";
+  dateFrom: number | null;
+  dateTo: number | null;
+}
+
+/** A saved report-builder filter set (Phase 3). Re-running it re-queries live tasks — it stores the filter, not a result snapshot. */
+export interface SavedReportView {
+  id: string;
+  name: string;
+  filters: ReportFilters;
+  createdAt: number;
+  updatedAt: number;
+}
+
 /** Suggested defaults surfaced in the UI; the field itself stays free text. */
 export const PROJECT_STATUS_SUGGESTIONS = [
   "Planning",
@@ -189,6 +214,7 @@ class ProjectTrackerDB extends Dexie {
   taskDependencies!: EntityTable<TaskDependency, "id">;
   recurrenceRules!: EntityTable<RecurrenceRule, "id">;
   milestones!: EntityTable<Milestone, "id">;
+  savedReportViews!: EntityTable<SavedReportView, "id">;
 
   constructor() {
     super("project-tracker");
@@ -225,6 +251,12 @@ class ProjectTrackerDB extends Dexie {
             if (task.recurrenceParentId === undefined) task.recurrenceParentId = null;
           });
       });
+
+    // v3 (Phase 3): the report builder's saved views. A brand-new table needs no .upgrade() —
+    // existing rows in every other table are untouched, and there's nothing to backfill.
+    this.version(3).stores({
+      savedReportViews: "id, name, updatedAt",
+    });
   }
 }
 

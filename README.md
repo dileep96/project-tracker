@@ -7,14 +7,17 @@ all data lives in the browser via IndexedDB.
 Build plan and phase status are tracked in the parent firstmate home's
 backlog (not in this repo).
 
-This repo currently implements **Phase 1 (foundation)** and **Phase 2
-(views)**: app shell, data layer, project/task CRUD, the List/Table view,
-Kanban board, Gantt chart with critical-path analysis, Calendar, the
-portfolio Timeline, and recurring-task instance generation. The analytics
-dashboard, resource/time/budget tracking, automation, collaboration, and
-templates/import-export/RBAC are later phases; the Dashboard nav entry
-exists in the sidebar already (shown disabled with a "Soon" badge) so that
-phase only adds a route, not a shell restructure.
+This repo currently implements **Phase 1 (foundation)**, **Phase 2
+(views)**, and **Phase 3 (analytics)**: app shell, data layer, project/task
+CRUD, the List/Table view, Kanban board, Gantt chart with critical-path
+analysis, Calendar, the portfolio Timeline, recurring-task instance
+generation, and the executive dashboard (KPIs, burndown/burnup, portfolio
+rollup, resource heatmap, trend charts, a click-to-filter drill-down, and a
+report builder with CSV/PDF/Excel export). Resource/time/budget *tracking*
+(as opposed to the analytics that will consume it), automation,
+collaboration, and templates/import-export/RBAC are later phases — the
+dashboard's budget-burn and capacity-aware-velocity KPI cards are already
+wired to light up automatically once that data exists, no rework needed.
 
 ## Running locally
 
@@ -41,6 +44,17 @@ the schema.
 - react-router for navigation
 - Self-hosted variable fonts: Manrope (UI text) and JetBrains Mono (dates,
   counts, identifiers) via `@fontsource-variable/*`
+- Recharts (Phase 3) for every chart on the dashboard, lazy-loaded
+  (`React.lazy`) behind the `/dashboard` route — it's the single heaviest
+  dependency in the app, so no other route pays for it.
+- Report-builder export (Phase 3, all client-side, no backend): `jspdf` +
+  `jspdf-autotable` for PDF, `write-excel-file` for `.xlsx`. CSV is
+  hand-rolled (`src/lib/analytics/report.ts`) — trivial enough not to need a
+  dependency. `write-excel-file` was chosen over the more common
+  `xlsx`/SheetJS package specifically because the npm `xlsx` registry
+  version carries two unpatched advisories (prototype pollution, ReDoS);
+  `write-excel-file` is a small write-only library with zero advisories —
+  see AGENTS.md.
 
 ## Design system
 
@@ -137,6 +151,59 @@ axis (reusing `timeline-scale.ts`). Each band shows the project's
 with no dated tasks or milestones fall to an "No dates yet" list instead
 of collapsing the shared axis.
 
+## Analytics dashboard — `/dashboard` (Phase 3)
+
+Everything on the dashboard is computed live from `tasks`/`projects` on
+every render (via `useLiveQuery`) — there is no separate analytics/rollup
+table, and every number recomputes itself the moment underlying task data
+changes. Pure computation lives in `src/lib/analytics/` (no React), UI in
+`src/components/dashboard/`, all orchestrated by `src/pages/DashboardPage.tsx`.
+
+- **KPI cards** (`lib/analytics/kpis.ts`): completion rate, on-time
+  delivery %, overdue count, and a team-velocity proxy are computed from
+  `Task.createdAt/completedAt/dueDate` alone, each with a 30-day-trailing
+  delta. Budget burn rate has no data to compute yet (no Phase 4/5 budget
+  table) and always reports its honest "not enough data yet" state via the
+  same `KpiResult` shape — real data lighting it up later needs no UI
+  rework, only a real implementation behind that shape. `KpiCard.tsx` treats
+  `value: null` as the not-enough-data signal, never a fake number.
+- **Burndown/burnup** (`lib/analytics/burndown.ts`): reconstructed entirely
+  from each task's own dates — `scope(D)` = tasks created by day D,
+  `completed(D)` = tasks done by day D, `remaining(D) = scope − completed`.
+  The "ideal" line is a straight line from total scope to 0 at the latest
+  due date. Deliberately has no dedicated history/snapshot table (see
+  AGENTS.md for why, and when a future phase might actually need one).
+- **Portfolio rollup** (`PortfolioRollup.tsx`): every project's
+  `HealthBadge` + a completion-percentage bar, one screen, no per-project
+  drill-in required to read fleet health.
+- **Resource heatmap** (`lib/analytics/heatmap.ts`, `ResourceHeatmap.tsx`):
+  assignee × week grid; a cell counts tasks that assignee was *actively
+  carrying* that week (`createdAt` before week end, not completed before
+  week start) — closer to a utilization signal than a raw activity count.
+  Real color-intensity encoding via the sequential teal ramp (see
+  `index.css`), not a relabeled bar chart. Uses the same frozen-header/
+  frozen-column single-scroll-container pattern as Gantt/Timeline (see
+  AGENTS.md's sharp edges) since it's exactly the same "dense grid" case.
+- **Trend charts** (`lib/analytics/trends.ts`, `TrendCharts.tsx`):
+  throughput (tasks completed per week) and cycle time (creation →
+  completion, averaged per week), both trailing 12 weeks.
+- **Drill-down**: clicking a KPI card, a heatmap cell, or a chart bar/point
+  doesn't just look clickable — it sets `DashboardPage`'s `drillDown` state
+  to the exact `Task[]` that number was computed from, and
+  `DrillDownPanel.tsx` renders that subset through the *same* `TaskTable`
+  every other view uses (no second table component). The "all projects /
+  one project" scope selector at the top of the page filters the KPI row,
+  trend charts, and heatmap together; Portfolio rollup and Burndown stay
+  independent (portfolio is inherently cross-project, burndown already has
+  its own per-project picker).
+- **Report builder** (`ReportBuilder.tsx`): filters on project/status/
+  priority/assignee/date-range, reusing the same predicate shape TaskTable's
+  own filter bar uses (`lib/analytics/report.ts`). Saved views persist to
+  the `savedReportViews` Dexie table (schema v3) as the filter object
+  itself, not a result snapshot, so a saved view re-queries live data every
+  time it's loaded. Export (CSV/PDF/Excel) always operates on exactly the
+  currently-filtered task set.
+
 ## Recurring task generation
 
 `recurrenceRules` was schema-complete since Phase 1; Phase 2 adds the
@@ -166,7 +233,7 @@ Deleting a template task (one with a rule) cascades to every instance it
 generated, so instances can't outlive a deleted `recurrenceParentId` — see
 `deleteTask` in `src/lib/queries/tasks.ts`.
 
-## Dexie schema (version 2)
+## Dexie schema (version 3)
 
 All tables live in `src/lib/db.ts`. Every future phase should add a new
 `db.version(N).stores({...})` call (with an `.upgrade()` migration if data
@@ -174,7 +241,8 @@ needs transforming) rather than editing an existing version — see Dexie's
 docs on
 [schema versioning](https://dexie.org/docs/Tutorial/Design#database-versioning).
 Version 2 (Phase 2) adds `Task.recurrenceParentId` — see "Recurring task
-generation" above.
+generation" above. Version 3 (Phase 3) adds `savedReportViews` — a
+brand-new table, so no `.upgrade()` was needed.
 
 | Table | Notes |
 |---|---|
@@ -188,6 +256,7 @@ generation" above.
 | `taskDependencies` | `dependsOnTaskId` is **not** scoped to the same project as `taskId` — cross-project dependencies are supported by design. `addDependency` (`src/lib/queries/tasks.ts`) rejects self-dependencies and anything that would close a cycle across the *whole* graph, not just this task's own edges — the Gantt critical-path pass assumes an acyclic graph. |
 | `recurrenceRules` | `&taskId` unique index — one rule per task. Generation lives in `src/lib/recurrence.ts` (see "Recurring task generation" above). `Task.isRecurring` mirrors whether a rule exists — only the template task, never a generated instance. |
 | `milestones` | Per-project; tasks reference `milestoneId` optionally. Surfaced as read-only markers on Gantt and Timeline. |
+| `savedReportViews` | The Phase 3 report builder's saved filter sets. Stores the `ReportFilters` object itself (project/status/priority/assignee/date-range), not a result snapshot — loading a saved view re-runs it against current live data. No foreign key into `projects`/`tasks`, so nothing to cascade-delete. |
 
 Cascading deletes are hand-rolled (IndexedDB has no `ON DELETE CASCADE`) —
 see `deleteProject` and `deleteTask` in `src/lib/queries/`. Deleting a
@@ -209,7 +278,16 @@ src/
     gantt/
       critical-path.ts        CPM forward/backward pass
       timeline-scale.ts       Shared date<->pixel math (Gantt + Timeline)
+    analytics/               Phase 3: pure computation, no React — one file per chart/feature
+      date-buckets.ts           Day/week bucketing shared by burndown/trends/heatmap
+      kpis.ts                   Executive KPI cards (completion/on-time/overdue/velocity/budget)
+      burndown.ts                Ideal-vs-actual burndown/burnup curve, derived from task dates
+      trends.ts                  Throughput + cycle-time time series
+      heatmap.ts                  Assignee x week resource-utilization grid
+      report.ts                   Report-builder filter predicate + CSV/PDF/Excel export
+    chart-theme.ts           Shared Recharts colors/styles (CSS-var-backed, theme-reactive)
     queries/                CRUD + cascade-delete functions, one file per entity
+      report-views.ts          Saved report-view CRUD (Phase 3)
   hooks/                    useLiveQuery wrappers (reactive reads) + theme context
   components/
     ui/                      shadcn-generated primitives (owned, customized — see index.css)
@@ -221,8 +299,11 @@ src/
     gantt/                      Gantt chart + SVG dependency-link overlay
     calendar/                   Month calendar grid
     timeline/                   Portfolio timeline bands
+    dashboard/                  Phase 3: KpiCard, ChartCard, BurndownChart, PortfolioRollup,
+                                 ResourceHeatmap, TrendCharts, DrillDownPanel, ReportBuilder
   pages/                     Route-level components (ProjectsPage, ProjectDetailPage, AllTasksPage,
-                              BoardPage(+Picker), GanttPage(+Picker), CalendarPage, TimelinePage)
+                              BoardPage(+Picker), GanttPage(+Picker), CalendarPage, TimelinePage,
+                              DashboardPage — lazy-loaded, see App.tsx)
 ```
 
 ## Known trade-offs (intentional, revisit if a later phase needs otherwise)
@@ -242,3 +323,12 @@ src/
   can produce dozens of dated instances within the lookahead window, which
   would flood a schedule/critical-path view with rows that carry no real
   scheduling meaning. This is intentional scoping, not a filter bug.
+- Burndown/burnup (Phase 3) has no dedicated daily-snapshot table — it
+  reconstructs the curve from each task's own `createdAt`/`completedAt`/
+  `dueDate` on every render. This is exact for "when was a task created and
+  when was it finished" but can't reconstruct anything that isn't stored on
+  the task itself (e.g. a task's *status* history, or scope that was added
+  and later deleted before anyone looked at the dashboard). Revisit with a
+  real snapshot table only if a future phase needs that finer fidelity —
+  reconstruction-from-current-fields is deliberately preferred over adding
+  new state to keep in sync.

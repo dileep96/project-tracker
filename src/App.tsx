@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { Suspense, lazy, useEffect } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "@/components/layout/AppShell";
 import { ProjectsPage } from "@/pages/ProjectsPage";
@@ -11,6 +11,17 @@ import { GanttPage } from "@/pages/GanttPage";
 import { CalendarPage } from "@/pages/CalendarPage";
 import { TimelinePage } from "@/pages/TimelinePage";
 import { generateRecurringInstances } from "@/lib/recurrence";
+
+// Lazy-loaded: Recharts (plus its d3 dependencies) is the single heaviest import in the app —
+// code-splitting it here keeps every other route's bundle the size it was before Phase 3 instead
+// of every page paying for a chart library only /dashboard uses.
+const DashboardPage = lazy(() => import("@/pages/DashboardPage").then((m) => ({ default: m.DashboardPage })));
+
+const dashboardFallback = (
+  <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+    <div className="h-64 animate-pulse rounded-xl bg-muted" />
+  </div>
+);
 
 export default function App() {
   // Bounded catch-up pass: fires once per app load so a recurring task's next occurrence exists
@@ -35,6 +46,14 @@ export default function App() {
         <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/projects/:projectId/calendar" element={<CalendarPage />} />
         <Route path="/timeline" element={<TimelinePage />} />
+        <Route
+          path="/dashboard"
+          element={
+            <Suspense fallback={dashboardFallback}>
+              <DashboardPage />
+            </Suspense>
+          }
+        />
         <Route path="*" element={<Navigate to="/projects" replace />} />
       </Route>
     </Routes>

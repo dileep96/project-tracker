@@ -26,5 +26,5 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Gantt", to: "/gantt", icon: ChartBarHorizontal },
   { label: "Calendar", to: "/calendar", icon: CalendarBlank },
   { label: "Timeline", to: "/timeline", icon: ClockCountdown },
-  { label: "Dashboard", icon: ChartPieSlice, comingSoon: true },
+  { label: "Dashboard", to: "/dashboard", icon: ChartPieSlice },
 ];
