@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Label } from "@/components/ui/label";
@@ -12,9 +13,11 @@ import { AttachmentsPanel } from "@/components/tasks/AttachmentsPanel";
 import { CustomFieldsPanel } from "@/components/tasks/CustomFieldsPanel";
 import { DependenciesPanel } from "@/components/tasks/DependenciesPanel";
 import { RecurrencePanel } from "@/components/tasks/RecurrencePanel";
+import { TaskTimePanel } from "@/components/tasks/TaskTimePanel";
 import { useTask } from "@/hooks/use-tasks";
 import { useTaskStatuses } from "@/hooks/use-task-statuses";
 import { useMilestones } from "@/hooks/use-milestones";
+import { usePeople } from "@/hooks/use-people";
 import { updateTask } from "@/lib/queries/tasks";
 
 function epochToDateInput(value: number | null): string {
@@ -33,6 +36,8 @@ export function TaskDetailSheet({ taskId, onClose }: { taskId: string | null; on
   const task = useTask(taskId ?? undefined);
   const statuses = useTaskStatuses(task?.projectId);
   const milestones = useMilestones(task?.projectId);
+  const people = usePeople();
+  const assigneeListId = useId();
 
   return (
     <Sheet open={taskId !== null} onOpenChange={(open) => !open && onClose()}>
@@ -64,8 +69,12 @@ export function TaskDetailSheet({ taskId, onClose }: { taskId: string | null; on
             </SheetHeader>
 
             <Tabs defaultValue="details" className="min-h-0 flex-1">
-              <TabsList className="mx-4 mt-3 w-[calc(100%-2rem)]">
+              {/* overflow-x-auto: 7 tabs no longer fit the sheet's own width at mobile widths (this
+                  grew from 6 to 7 in Phase 4 with the new Time tab) — scroll horizontally within
+                  the tab bar itself rather than letting it push past the sheet's edge. */}
+              <TabsList className="mx-4 mt-3 w-[calc(100%-2rem)] justify-start overflow-x-auto">
                 <TabsTrigger value="details">Details</TabsTrigger>
+                <TabsTrigger value="time">Time</TabsTrigger>
                 <TabsTrigger value="subtasks">Subtasks</TabsTrigger>
                 <TabsTrigger value="files">Files</TabsTrigger>
                 <TabsTrigger value="fields">Fields</TabsTrigger>
@@ -111,10 +120,16 @@ export function TaskDetailSheet({ taskId, onClose }: { taskId: string | null; on
                     <Label htmlFor="detail-assignee">Assignee</Label>
                     <Input
                       id="detail-assignee"
+                      list={assigneeListId}
                       defaultValue={task.assignee}
                       placeholder="Unassigned"
                       onBlur={(e) => updateTask(task.id, { assignee: e.target.value })}
                     />
+                    <datalist id={assigneeListId}>
+                      {(people ?? []).map((p) => (
+                        <option key={p.id} value={p.name} />
+                      ))}
+                    </datalist>
                   </div>
 
                   <div className="flex flex-col gap-1.5">
@@ -143,6 +158,10 @@ export function TaskDetailSheet({ taskId, onClose }: { taskId: string | null; on
                       </SelectContent>
                     </Select>
                   </div>
+                </TabsContent>
+
+                <TabsContent value="time" className="px-4 py-4">
+                  <TaskTimePanel task={task} />
                 </TabsContent>
 
                 <TabsContent value="subtasks" className="px-4 py-4">

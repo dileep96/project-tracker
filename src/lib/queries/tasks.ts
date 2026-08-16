@@ -24,6 +24,7 @@ export interface CreateTaskInput {
   milestoneId?: string | null;
   /** Set only by the recurrence generator when cloning a new occurrence. */
   recurrenceParentId?: string | null;
+  estimatedHours?: number | null;
 }
 
 export async function createTask(input: CreateTaskInput): Promise<Task> {
@@ -42,6 +43,7 @@ export async function createTask(input: CreateTaskInput): Promise<Task> {
     milestoneId: input.milestoneId ?? null,
     isRecurring: false,
     recurrenceParentId: input.recurrenceParentId ?? null,
+    estimatedHours: input.estimatedHours ?? null,
     createdAt: timestamp,
     updatedAt: timestamp,
     completedAt: null,
@@ -73,7 +75,16 @@ async function cascadeDeleteTasks(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
   await db.transaction(
     "rw",
-    [db.tasks, db.subtasks, db.attachments, db.customFieldValues, db.taskDependencies, db.recurrenceRules],
+    [
+      db.tasks,
+      db.subtasks,
+      db.attachments,
+      db.customFieldValues,
+      db.taskDependencies,
+      db.recurrenceRules,
+      db.timeEntries,
+      db.activeTimers,
+    ],
     async () => {
       for (const id of ids) {
         await db.subtasks.where("taskId").equals(id).delete();
@@ -82,6 +93,13 @@ async function cascadeDeleteTasks(ids: string[]): Promise<void> {
         await db.taskDependencies.where("taskId").equals(id).delete();
         await db.taskDependencies.where("dependsOnTaskId").equals(id).delete();
         await db.recurrenceRules.where("taskId").equals(id).delete();
+        // Phase 4: time logged against a deleted task is task-owned data, same as its subtasks/
+        // attachments above — it goes with the task rather than surviving as an orphan. If a timer
+        // happens to be running for this exact task, stop it too instead of leaving it pointing at
+        // a task that no longer exists.
+        await db.timeEntries.where("taskId").equals(id).delete();
+        const runningTimer = await db.activeTimers.get("current");
+        if (runningTimer?.taskId === id) await db.activeTimers.delete("current");
       }
       await db.tasks.bulkDelete(ids);
     }

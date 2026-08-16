@@ -20,6 +20,8 @@ export interface Project {
   /** Free text with suggested defaults (see PROJECT_STATUS_SUGGESTIONS); not a fixed enum. */
   status: string;
   health: ProjectHealth;
+  /** Dollar budget estimate for the whole project, or null when unset. Added in schema v4 — the top-down number the Budget tab and the dashboard's "Budget burn rate" KPI compare actual cost against. See `lib/analytics/budget.ts`. */
+  budgetEstimate: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -65,6 +67,14 @@ export interface Task {
    * generated instances do not). Added in schema v2; see README's recurring-generation section.
    */
   recurrenceParentId: string | null;
+  /**
+   * Hours of effort estimated for this task, or null when unestimated. Added in schema v4 — the
+   * input every Phase 4 capacity/workload/budget computation is built on (see
+   * `lib/analytics/capacity.ts` and `lib/analytics/budget.ts`). Deliberately effort hours, not a
+   * date-range duration — a task can span two weeks calendar-wise while representing 3 hours of
+   * actual work, and capacity planning needs the effort number, not the span.
+   */
+  estimatedHours: number | null;
   createdAt: number;
   updatedAt: number;
   completedAt: number | null;
@@ -179,6 +189,80 @@ export interface SavedReportView {
   updatedAt: number;
 }
 
+/**
+ * A first-class person record (Phase 4). `Task.assignee` stays free text — deliberately not
+ * turned into a `personId` foreign key — so this table joins to tasks by exact `name` match
+ * rather than by id. See README's Phase 4 section and AGENTS.md for the full rationale: it
+ * avoids a breaking migration on the app's most-edited field, at the cost of a person rename
+ * going stale on already-assigned tasks until they're reassigned (surfaced in the Workload view
+ * as an "unmatched assignee", never silently dropped).
+ */
+export interface Person {
+  id: string;
+  name: string;
+  /** Hours available per week; a part-time person is just a lower number here, not a separate flag. */
+  weeklyCapacityHours: number;
+  /** Dollars per hour, used to derive actual cost from logged time (see `lib/analytics/budget.ts`). 0 = unrated. */
+  hourlyRate: number;
+  /** Inactive people are hidden from pickers but keep their historical time entries and capacity rows. */
+  active: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** A PTO / time-off range for a person — reduces their capacity for the days it covers (see `lib/analytics/capacity.ts`). Both dates are inclusive, start-of-day epoch ms. */
+export interface PersonTimeOff {
+  id: string;
+  personId: string;
+  startDate: number;
+  endDate: number;
+  /** Free text, e.g. "Vacation", "Sick" — not a fixed enum. */
+  label: string;
+  createdAt: number;
+}
+
+export type TimeEntrySource = "timer" | "manual";
+
+/**
+ * One logged block of time against a task, either stopped from the built-in timer or entered
+ * manually. `projectId` is denormalized from the task at entry time — tasks never move between
+ * projects after creation in this app, so this is safe and saves a join on every budget/timesheet
+ * query. `billable` is independent of cost accounting: actual cost (budget.ts) sums *all* logged
+ * time regardless of this flag — billable exists for client-invoicing filtering, not to decide
+ * what counts as real cost.
+ */
+export interface TimeEntry {
+  id: string;
+  taskId: string;
+  projectId: string;
+  personId: string;
+  /** The day this entry is logged against (start-of-day epoch ms) — may differ from `createdAt` for a manually backdated entry. */
+  date: number;
+  minutes: number;
+  billable: boolean;
+  note: string;
+  source: TimeEntrySource;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/**
+ * At most one row ever exists, always keyed `"current"` — a single global running timer, matching
+ * the app's no-auth/single-user model (the same reason `Task.assignee` is a free string rather
+ * than a session-scoped owner). `startedAt` is the persisted source of truth for elapsed time, not
+ * a client-side counter, so a page reload never loses or resets a running timer — see README's
+ * "Time tracking" section.
+ */
+export interface ActiveTimer {
+  id: "current";
+  taskId: string;
+  projectId: string;
+  personId: string;
+  billable: boolean;
+  note: string;
+  startedAt: number;
+}
+
 /** Suggested defaults surfaced in the UI; the field itself stays free text. */
 export const PROJECT_STATUS_SUGGESTIONS = [
   "Planning",
@@ -215,6 +299,10 @@ class ProjectTrackerDB extends Dexie {
   recurrenceRules!: EntityTable<RecurrenceRule, "id">;
   milestones!: EntityTable<Milestone, "id">;
   savedReportViews!: EntityTable<SavedReportView, "id">;
+  people!: EntityTable<Person, "id">;
+  personTimeOff!: EntityTable<PersonTimeOff, "id">;
+  timeEntries!: EntityTable<TimeEntry, "id">;
+  activeTimers!: EntityTable<ActiveTimer, "id">;
 
   constructor() {
     super("project-tracker");
@@ -257,6 +345,38 @@ class ProjectTrackerDB extends Dexie {
     this.version(3).stores({
       savedReportViews: "id, name, updatedAt",
     });
+
+    // v4 (Phase 4): workload/capacity, time tracking, and budget tracking. Four brand-new tables
+    // need no backfill, but `tasks` and `projects` each gain a plain (non-indexed) field —
+    // `estimatedHours` and `budgetEstimate` — that existing rows predate entirely, so both are
+    // redeclared here (their index strings are unchanged from v2/v1) purely to make the upgrade
+    // obvious and self-documenting; a Dexie versionchange transaction has access to every table in
+    // the database regardless of which ones a given version's .stores() call lists, the same as
+    // any other IndexedDB upgrade transaction.
+    this.version(4)
+      .stores({
+        tasks:
+          "id, projectId, statusId, priority, dueDate, startDate, createdAt, completedAt, milestoneId, recurrenceParentId, *tags",
+        projects: "id, status, health, createdAt, updatedAt",
+        people: "id, name, active",
+        personTimeOff: "id, personId, startDate, endDate",
+        timeEntries: "id, taskId, projectId, personId, date, billable",
+        activeTimers: "id, taskId, personId",
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table("tasks")
+          .toCollection()
+          .modify((task) => {
+            if (task.estimatedHours === undefined) task.estimatedHours = null;
+          });
+        await tx
+          .table("projects")
+          .toCollection()
+          .modify((project) => {
+            if (project.budgetEstimate === undefined) project.budgetEstimate = null;
+          });
+      });
   }
 }
 

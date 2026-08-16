@@ -10,6 +10,8 @@ import { GanttPickerPage } from "@/pages/GanttPickerPage";
 import { GanttPage } from "@/pages/GanttPage";
 import { CalendarPage } from "@/pages/CalendarPage";
 import { TimelinePage } from "@/pages/TimelinePage";
+import { WorkloadPage } from "@/pages/WorkloadPage";
+import { TimesheetsPage } from "@/pages/TimesheetsPage";
 import { generateRecurringInstances } from "@/lib/recurrence";
 
 // Lazy-loaded: Recharts (plus its d3 dependencies) is the single heaviest import in the app —
@@ -46,6 +48,8 @@ export default function App() {
         <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/projects/:projectId/calendar" element={<CalendarPage />} />
         <Route path="/timeline" element={<TimelinePage />} />
+        <Route path="/workload" element={<WorkloadPage />} />
+        <Route path="/timesheets" element={<TimesheetsPage />} />
         <Route
           path="/dashboard"
           element={

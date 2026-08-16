@@ -1,5 +1,6 @@
-import type { Task } from "@/lib/db";
+import type { Person, Project, Task, TimeEntry } from "@/lib/db";
 import { WEEK_MS } from "@/lib/analytics/date-buckets";
+import { actualCost } from "@/lib/analytics/budget";
 
 export type KpiFormat = "percent" | "count" | "rate";
 export type KpiDeltaSense = "higher-is-better" | "lower-is-better";
@@ -15,6 +16,8 @@ export interface KpiResult {
   /** Change vs the comparable window (percentage points for "percent", absolute for "count"/"rate"). */
   delta?: number | null;
   deltaSense?: KpiDeltaSense;
+  /** True renders the value in the destructive tone regardless of delta — for a KPI whose *level*, not its trend, is what makes it bad (e.g. over 100% of budget spent). Independent of delta/deltaSense, which are about direction of change, not the current value's severity. */
+  critical?: boolean;
   /** The exact tasks this number was computed from — drives click-to-drill-down. */
   matchingTasks: Task[];
 }
@@ -64,12 +67,17 @@ export interface DashboardKpis {
 /**
  * Computes every KPI card as of `now`, plus a comparable snapshot 30 days back (7 days back for
  * velocity, since it's already a multi-week average) so each card can show a trend delta.
- * Everything here is derived from `Task.createdAt/completedAt/dueDate` alone — no budget or
- * time-tracking tables exist yet (Phases 4-5), so `budgetBurn` always reports the honest
- * "not enough data yet" state instead of a fabricated number; it needs no future rework once
- * that data lands, only a real implementation swapped in behind the same KpiResult shape.
+ * Everything except `budgetBurn` is derived from `Task.createdAt/completedAt/dueDate` alone.
+ * `budgetBurn` needs Phase 4's budget data (`projects`, `timeEntries`, `people`) — passed
+ * separately since every other KPI never needed it — and still reports the honest "not enough
+ * data yet" state until at least one project has a `budgetEstimate` set, exactly the same
+ * `KpiResult` shape as before, no UI rework required now that it's real.
  */
-export function computeDashboardKpis(tasks: Task[], now: number): DashboardKpis {
+export function computeDashboardKpis(
+  tasks: Task[],
+  now: number,
+  budgetData: { projects: Project[]; timeEntries: TimeEntry[]; people: Person[] }
+): DashboardKpis {
   const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
 
   const currentCompletion = completionRateAt(tasks, now);
@@ -132,14 +140,57 @@ export function computeDashboardKpis(tasks: Task[], now: number): DashboardKpis 
     matchingTasks: currentWindowTasks,
   };
 
-  const budgetBurn: KpiResult = {
+  const budgetBurn = computeBudgetBurnKpi(tasks, budgetData.projects, budgetData.timeEntries, budgetData.people);
+
+  return { completionRate, onTimeDelivery, overdueCount, velocity, budgetBurn };
+}
+
+/**
+ * % of budgeted projects' combined estimate that's actually been spent (logged time × person
+ * rate, summed — see `lib/analytics/budget.ts`). Projects with no `budgetEstimate` are excluded
+ * from both the numerator and denominator entirely, not treated as a 0 estimate — counting them
+ * would either silently ignore their real spend or divide by zero. No trailing-30-day delta: this
+ * is a cumulative "% of the whole budget spent so far" number, not a rate that's meaningfully
+ * "up is bad" the way overdue-count is — it only ever climbs as more time gets logged, by design.
+ */
+function computeBudgetBurnKpi(tasks: Task[], projects: Project[], timeEntries: TimeEntry[], people: Person[]): KpiResult {
+  const budgeted = projects.filter((p) => p.budgetEstimate !== null);
+  const budgetedIds = new Set(budgeted.map((p) => p.id));
+  const matchingTasks = tasks.filter((t) => budgetedIds.has(t.projectId));
+
+  if (budgeted.length === 0) {
+    return {
+      key: "budget-burn",
+      label: "Budget burn rate",
+      format: "percent",
+      value: null,
+      notEnoughDataReason: "No project budget estimates yet — set one on a project to see this.",
+      matchingTasks: [],
+    };
+  }
+
+  const totalEstimate = budgeted.reduce((sum, p) => sum + (p.budgetEstimate ?? 0), 0);
+  if (totalEstimate <= 0) {
+    return {
+      key: "budget-burn",
+      label: "Budget burn rate",
+      format: "percent",
+      value: null,
+      notEnoughDataReason: "Budgeted projects have a $0 estimate — set a real budget to see this.",
+      matchingTasks,
+    };
+  }
+
+  const relevantEntries = timeEntries.filter((e) => budgetedIds.has(e.projectId));
+  const totalActual = actualCost(relevantEntries, people);
+
+  const value = (totalActual / totalEstimate) * 100;
+  return {
     key: "budget-burn",
     label: "Budget burn rate",
     format: "percent",
-    value: null,
-    notEnoughDataReason: "No budget data yet — this lights up automatically once budget tracking lands.",
-    matchingTasks: [],
+    value,
+    critical: value > 100,
+    matchingTasks,
   };
-
-  return { completionRate, onTimeDelivery, overdueCount, velocity, budgetBurn };
 }

@@ -19,6 +19,7 @@ import { PrioritySelect } from "@/components/tasks/PrioritySelect";
 import { EditableTextCell } from "@/components/tasks/cells/EditableTextCell";
 import { DateCell } from "@/components/tasks/cells/DateCell";
 import { TagsCell } from "@/components/tasks/cells/TagsCell";
+import { EstimateCell } from "@/components/tasks/cells/EstimateCell";
 import { TASK_PRIORITIES, type Project, type Task, type TaskPriority, type TaskStatus } from "@/lib/db";
 import { cn } from "@/lib/utils";
 import { deleteTask, setTaskCompleted, updateTask } from "@/lib/queries/tasks";
@@ -268,6 +269,7 @@ export function TaskTable({
               <TableHead className="w-32">Assignee</TableHead>
               <SortHeader label="Start" sortKeyName="startDate" className="w-28" />
               <SortHeader label="Due" sortKeyName="dueDate" className="w-28" />
+              <TableHead className="w-20">Est. h</TableHead>
               {showProjectColumn && <SortHeader label="Project" sortKeyName="project" className="w-32" />}
               <TableHead className="w-16 text-right">
                 <span className="sr-only">Actions</span>
@@ -277,7 +279,7 @@ export function TaskTable({
           <TableBody>
             {pageRows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={showProjectColumn ? 10 : 9} className="py-10 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={showProjectColumn ? 11 : 10} className="py-10 text-center text-sm text-muted-foreground">
                   {emptyMessage}
                 </TableCell>
               </TableRow>
@@ -331,6 +333,9 @@ export function TaskTable({
                         onCommit={(v) => updateTask(task.id, { dueDate: v })}
                         overdue={overdue}
                       />
+                    </TableCell>
+                    <TableCell>
+                      <EstimateCell value={task.estimatedHours} onCommit={(v) => updateTask(task.id, { estimatedHours: v })} />
                     </TableCell>
                     {showProjectColumn && (
                       <TableCell className="truncate text-xs text-muted-foreground">

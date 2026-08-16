@@ -6,6 +6,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Logo } from "@/components/layout/Logo";
 import { NavList } from "@/components/layout/NavList";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
+import { RunningTimerBar } from "@/components/timer/RunningTimerBar";
 
 export function AppShell() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -50,6 +51,7 @@ export function AppShell() {
         </header>
 
         <main className="min-w-0 flex-1 overflow-y-auto">
+          <RunningTimerBar />
           <Outlet />
         </main>
       </div>

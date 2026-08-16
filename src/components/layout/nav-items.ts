@@ -6,6 +6,8 @@ import {
   FolderOpen,
   Kanban,
   ListChecks,
+  Timer,
+  UsersThree,
   type Icon,
 } from "@phosphor-icons/react";
 
@@ -26,5 +28,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Gantt", to: "/gantt", icon: ChartBarHorizontal },
   { label: "Calendar", to: "/calendar", icon: CalendarBlank },
   { label: "Timeline", to: "/timeline", icon: ClockCountdown },
+  { label: "Workload", to: "/workload", icon: UsersThree },
+  { label: "Timesheets", to: "/timesheets", icon: Timer },
   { label: "Dashboard", to: "/dashboard", icon: ChartPieSlice },
 ];

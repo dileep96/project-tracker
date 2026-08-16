@@ -69,7 +69,7 @@ export function KpiCard({ result, icon: IconComponent, onDrillDown }: KpiCardPro
         <span
           className={cn(
             "font-mono text-2xl font-semibold tabular-nums",
-            notEnoughData ? "text-muted-foreground/50" : "text-foreground"
+            notEnoughData ? "text-muted-foreground/50" : result.critical ? "text-health-red-fg" : "text-foreground"
           )}
         >
           {formatValue(result)}

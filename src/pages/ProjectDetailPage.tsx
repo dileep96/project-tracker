@@ -23,6 +23,7 @@ import { TaskDetailSheet } from "@/components/tasks/TaskDetailSheet";
 import { MilestoneManager } from "@/components/milestones/MilestoneManager";
 import { StatusManager } from "@/components/tasks/StatusManager";
 import { CustomFieldDefsManager } from "@/components/tasks/CustomFieldDefsManager";
+import { ProjectBudgetPanel } from "@/components/budget/ProjectBudgetPanel";
 import { useProject } from "@/hooks/use-projects";
 import { useProjectTasks } from "@/hooks/use-tasks";
 import { useTaskStatuses } from "@/hooks/use-task-statuses";
@@ -115,6 +116,7 @@ export function ProjectDetailPage() {
         <TabsList>
           <TabsTrigger value="tasks">Tasks</TabsTrigger>
           <TabsTrigger value="milestones">Milestones</TabsTrigger>
+          <TabsTrigger value="budget">Budget</TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
         </TabsList>
 
@@ -134,6 +136,10 @@ export function ProjectDetailPage() {
 
         <TabsContent value="milestones" className="pt-4">
           <MilestoneManager projectId={project.id} />
+        </TabsContent>
+
+        <TabsContent value="budget" className="pt-4">
+          <ProjectBudgetPanel project={project} tasks={tasks} />
         </TabsContent>
 
         <TabsContent value="settings" className="flex flex-col gap-8 pt-4">

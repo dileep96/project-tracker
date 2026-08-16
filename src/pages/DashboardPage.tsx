@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from "react";
-import { CheckCircle, ClockCountdown, Gauge, Target, Warning } from "@phosphor-icons/react";
+import { CheckCircle, CurrencyDollar, Gauge, Target, Warning } from "@phosphor-icons/react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { KpiCard } from "@/components/dashboard/KpiCard";
 import { BurndownChart } from "@/components/dashboard/BurndownChart";
@@ -12,6 +12,8 @@ import { TaskDetailSheet } from "@/components/tasks/TaskDetailSheet";
 import { useAllTasks } from "@/hooks/use-tasks";
 import { useProjects } from "@/hooks/use-projects";
 import { useAllTaskStatusesByProject } from "@/hooks/use-task-statuses";
+import { useAllTimeEntries } from "@/hooks/use-time-entries";
+import { usePeople } from "@/hooks/use-people";
 import { computeDashboardKpis } from "@/lib/analytics/kpis";
 import type { KpiResult } from "@/lib/analytics/kpis";
 import type { Task } from "@/lib/db";
@@ -20,6 +22,8 @@ export function DashboardPage() {
   const tasks = useAllTasks();
   const projects = useProjects();
   const statusesByProject = useAllTaskStatusesByProject();
+  const timeEntries = useAllTimeEntries();
+  const people = usePeople();
 
   const [projectFilter, setProjectFilter] = useState<string | null>(null);
   const [burndownProjectId, setBurndownProjectId] = useState<string | null>(null);
@@ -42,9 +46,18 @@ export function DashboardPage() {
     [tasks, projectFilter]
   );
 
-  const kpis = useMemo(() => computeDashboardKpis(scopedTasks, now), [scopedTasks, now]);
+  const kpis = useMemo(
+    () =>
+      computeDashboardKpis(scopedTasks, now, {
+        projects: projectFilter ? (projects ?? []).filter((p) => p.id === projectFilter) : (projects ?? []),
+        timeEntries: timeEntries ?? [],
+        people: people ?? [],
+      }),
+    [scopedTasks, now, projects, projectFilter, timeEntries, people]
+  );
 
-  const loading = tasks === undefined || projects === undefined || statusesByProject === undefined;
+  const loading =
+    tasks === undefined || projects === undefined || statusesByProject === undefined || timeEntries === undefined || people === undefined;
 
   function handleDrillDown(state: DrillDownState) {
     setDrillDown(state);
@@ -109,7 +122,7 @@ export function DashboardPage() {
         <KpiCard result={kpis.onTimeDelivery} icon={Target} onDrillDown={handleKpiDrillDown} />
         <KpiCard result={kpis.overdueCount} icon={Warning} onDrillDown={handleKpiDrillDown} />
         <KpiCard result={kpis.velocity} icon={Gauge} onDrillDown={handleKpiDrillDown} />
-        <KpiCard result={kpis.budgetBurn} icon={ClockCountdown} onDrillDown={handleKpiDrillDown} />
+        <KpiCard result={kpis.budgetBurn} icon={CurrencyDollar} onDrillDown={handleKpiDrillDown} />
       </div>
 
       {drillDown && (

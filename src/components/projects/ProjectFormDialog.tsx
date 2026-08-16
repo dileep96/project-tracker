@@ -40,6 +40,7 @@ export function ProjectFormDialog({ open, onOpenChange, project }: ProjectFormDi
   const [owner, setOwner] = useState("");
   const [status, setStatus] = useState<string>("Planning");
   const [health, setHealth] = useState<ProjectHealth>("green");
+  const [budgetEstimate, setBudgetEstimate] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -49,6 +50,7 @@ export function ProjectFormDialog({ open, onOpenChange, project }: ProjectFormDi
     setOwner(project?.owner ?? "");
     setStatus(project?.status ?? "Planning");
     setHealth(project?.health ?? "green");
+    setBudgetEstimate(project?.budgetEstimate === null || project?.budgetEstimate === undefined ? "" : String(project.budgetEstimate));
   }, [open, project]);
 
   const statusSuggestions = Array.from(
@@ -60,6 +62,7 @@ export function ProjectFormDialog({ open, onOpenChange, project }: ProjectFormDi
     if (!name.trim()) return;
     setSubmitting(true);
     try {
+      const budgetEstimateValue = budgetEstimate.trim() === "" ? null : Math.max(0, Number(budgetEstimate) || 0);
       if (isEditing) {
         await updateProject(project.id, {
           name: name.trim(),
@@ -67,6 +70,7 @@ export function ProjectFormDialog({ open, onOpenChange, project }: ProjectFormDi
           owner: owner.trim(),
           status: status.trim() || "Planning",
           health,
+          budgetEstimate: budgetEstimateValue,
         });
         toast.success("Project updated");
       } else {
@@ -76,6 +80,7 @@ export function ProjectFormDialog({ open, onOpenChange, project }: ProjectFormDi
           owner: owner.trim(),
           status: status.trim() || "Planning",
           health,
+          budgetEstimate: budgetEstimateValue,
         });
         toast.success("Project created");
       }
@@ -148,20 +153,34 @@ export function ProjectFormDialog({ open, onOpenChange, project }: ProjectFormDi
               </div>
             </div>
 
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="project-health">Health</Label>
-              <Select value={health} onValueChange={(v) => setHealth(v as ProjectHealth)}>
-                <SelectTrigger id="project-health" className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {HEALTH_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="project-health">Health</Label>
+                <Select value={health} onValueChange={(v) => setHealth(v as ProjectHealth)}>
+                  <SelectTrigger id="project-health" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {HEALTH_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="project-budget">Budget estimate ($)</Label>
+                <Input
+                  id="project-budget"
+                  type="number"
+                  min={0}
+                  step={100}
+                  value={budgetEstimate}
+                  onChange={(e) => setBudgetEstimate(e.target.value)}
+                  placeholder="Optional"
+                />
+              </div>
             </div>
           </div>
 
