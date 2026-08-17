@@ -9,22 +9,28 @@ backlog (not in this repo).
 
 This repo currently implements **Phase 1 (foundation)**, **Phase 2
 (views)**, **Phase 3 (analytics)**, **Phase 4 (resource/time/budget
-tracking)**, and **Phase 5 (automation, risk register, AI)**: app shell,
-data layer, project/task CRUD, the List/Table view, Kanban board, Gantt
-chart with critical-path analysis, Calendar, the portfolio Timeline,
-recurring-task instance generation, the executive dashboard (KPIs,
-burndown/burnup, portfolio rollup, resource heatmap, trend charts, a
-click-to-filter drill-down, and a report builder with CSV/PDF/Excel
-export), a workload/capacity view, a built-in timer plus manual time entry
-with timesheets, estimated-vs-actual budget tracking per project/task,
+tracking)**, **Phase 5 (automation, risk register, AI)**, and **Phase 6
+(comments, activity feed, notifications, search)**: app shell, data layer,
+project/task CRUD, the List/Table view, Kanban board, Gantt chart with
+critical-path analysis, Calendar, the portfolio Timeline, recurring-task
+instance generation, the executive dashboard (KPIs, burndown/burnup,
+portfolio rollup, resource heatmap, trend charts, a click-to-filter
+drill-down, and a report builder with CSV/PDF/Excel export), a
+workload/capacity view, a built-in timer plus manual time entry with
+timesheets, estimated-vs-actual budget tracking per project/task,
 project-scoped automation rules with a run log, a cross-project risk
-register, and AI features (a pluggable LM Studio/OpenAI/Azure OpenAI
-client, per-project AI-generated status summaries, and a natural-language
-task query page) behind a settings page at `/settings/ai`. The dashboard's
-"Budget burn rate" KPI now computes a real value from that budget data (see
-Phase 4 section below) — the honest "not enough data yet" state Phase 3
-shipped it with only shows again if no project has a budget estimate set
-yet. Collaboration and templates/import-export/RBAC are later phases.
+register, AI features (a pluggable LM Studio/OpenAI/Azure OpenAI client,
+per-project AI-generated status summaries, and a natural-language task
+query page) behind a settings page at `/settings/ai`, per-task/per-project
+comment threads, a unified activity feed/audit log, an in-app notification
+center with deadline reminders and a digest, and global search
+(Cmd/Ctrl+K) with saved filters. The dashboard's "Budget burn rate" KPI now
+computes a real value from that budget data (see Phase 4 section below) —
+the honest "not enough data yet" state Phase 3 shipped it with only shows
+again if no project has a budget estimate set yet. Real multi-user
+auth/sync, templates, and import-export/RBAC are later phases — Phase 6
+builds *toward* multi-user shape (e.g. a free-text comment author) without
+adding actual accounts.
 
 ## Running locally
 
@@ -66,6 +72,12 @@ the schema.
   client.ts` talks to LM Studio/OpenAI/Azure OpenAI with plain `fetch`
   against their REST APIs directly, no provider SDK. No client-side LLM
   runtime either — every provider is a real HTTP endpoint.
+- Global search (Phase 6) adds **one new dependency**: `cmdk`, via shadcn's
+  `Command`/`CommandDialog` primitives (`npx shadcn add command`, which
+  also generated `src/components/ui/input-group.tsx` as a dependency) —
+  the Cmd/Ctrl+K palette. Everything else in Phase 6 (comments, the
+  activity feed, notifications, saved searches) is plain Dexie + React,
+  no new packages.
 
 ## Design system
 
@@ -486,7 +498,53 @@ than silently producing an empty or wrong result. See
 request shapes, the validation approach, and a real prompt-engineering
 lesson learned by testing against a small local model.
 
-## Dexie schema (version 5)
+## Comments, activity feed, notifications & search — Phase 6
+
+### Comments — task detail sheet's **Comments** tab, project detail page's **Comments** tab
+
+Per-task and per-project threads (`comments` table). `author` is free text,
+matching `Task.assignee`'s existing no-auth pattern — the composer offers a
+`<datalist>` of `people` names (same technique the assignee field already
+uses) and remembers the last name typed in `localStorage`, purely as a
+convenience, not an identity system. Comments support edit (sets `editedAt`)
+and delete; both are always available on every comment since there's no
+concept of "your own" comment without real auth.
+
+### Activity feed / audit log — task detail sheet's **Activity** tab, project detail page's **Activity** tab
+
+One merged, chronological feed per task or project, combining three
+sources: **field changes** (a new `fieldChangeLog` table — see AGENTS.md
+for exactly which `Task`/`Project` fields are tracked and why automation
+actions never appear here twice), **comments**, and **Phase 5's automation
+run log** (read directly, not re-detected). A project's Activity tab
+already shows the combined view across every one of its tasks too — see
+AGENTS.md for how that's made a single indexed query rather than a
+per-task fan-out.
+
+### Notification center — bell icon (sidebar footer on desktop, header on mobile)
+
+Click the bell for a panel with two tabs: **Notifications** (deadline
+reminders for overdue/due-soon tasks, Phase 5 automation firings, and
+Phase 5 risks — all computed live, never stored, same philosophy as the
+risk register itself) and **Digest** (Today / This week toggle,
+summarizing tasks created/completed/due, comments posted, automations run,
+and current active-risk count for that window — an in-app summary, not a
+sent email, since this app has no backend to send one from). Unread state
+persists in a small `notificationReadState` table; clicking a notification
+marks it read and opens the task (or navigates to the project, for
+risk/automation notifications with no single task). See AGENTS.md for the
+exact notification-id scheme and digest period math.
+
+### Global search — `Cmd/Ctrl+K` from anywhere
+
+A command-palette search across projects, tasks, and comments
+(`src/lib/search.ts`, plain substring matching), with type filter chips and
+**saved searches** — name the current query/filter combination for
+one-click reuse later, persisted the same way Phase 3's report-builder
+saved views are (a `savedSearches` table storing the query itself, re-run
+against live data on load, not a result snapshot).
+
+## Dexie schema (version 6)
 
 All tables live in `src/lib/db.ts`. Every future phase should add a new
 `db.version(N).stores({...})` call (with an `.upgrade()` migration if data
@@ -501,12 +559,15 @@ four brand-new tables (`people`, `personTimeOff`, `timeEntries`,
 `Task.estimatedHours` and `Project.budgetEstimate` — both backfilled to
 `null` for pre-existing rows via `.upgrade()`. Version 5 (Phase 5) adds
 three more brand-new tables (`automationRules`, `automationRunLog`,
-`aiProviderConfig`) — again no `.upgrade()` needed, same as v3. Note for
-future phases: a Dexie upgrade transaction has access to every table in the
-database, not just the ones a given version's `.stores()` call lists — v4's
-`.upgrade()` modifies `tasks`/`projects` rows even though their index
-strings are unchanged from earlier versions; only the tables whose
-*indexes* change need to appear in that version's `.stores()` object.
+`aiProviderConfig`) — again no `.upgrade()` needed, same as v3. Version 6
+(Phase 6) adds four more brand-new tables (`comments`, `fieldChangeLog`,
+`notificationReadState`, `savedSearches`) — same as v3/v5, no `.upgrade()`
+needed. Note for future phases: a Dexie upgrade transaction has access to
+every table in the database, not just the ones a given version's
+`.stores()` call lists — v4's `.upgrade()` modifies `tasks`/`projects` rows
+even though their index strings are unchanged from earlier versions; only
+the tables whose *indexes* change need to appear in that version's
+`.stores()` object.
 
 | Table | Notes |
 |---|---|
@@ -528,28 +589,36 @@ strings are unchanged from earlier versions; only the tables whose
 | `automationRules` (v5) | Project-scoped rule = `trigger` + optional `condition` + `actions[]` — see "Automation" above. |
 | `automationRunLog` (v5) | One row per rule *firing* (`ruleId`, `ruleName`, `projectId`, `taskId`, `taskTitle`, `trigger`, `summary`, `firedAt`), `[ruleId+taskId]` compound index for the overdue-sweep's dedupe check. `ruleName`/`taskTitle` are denormalized so a row stays readable after the rule or task it refers to is deleted. |
 | `aiProviderConfig` (v5) | Single row, `id: "current"` (same pattern as `activeTimers`). All three providers' fields nested under their own key plus which one is active — see "AI provider..." above. |
+| `comments` (v6) | Per-task/per-project threads. `author` is free text (no auth). `projectId`/`entityTitle` are denormalized — see "Comments" above and AGENTS.md. |
+| `fieldChangeLog` (v6) | One row per tracked `Task`/`Project` field edit — the audit-log half of the activity feed. `fromValue`/`toValue` are already-resolved display strings, not raw stored values. See AGENTS.md for the exact tracked-field list. |
+| `notificationReadState` (v6) | Read/dismissed ledger for the (never-stored) computed notification list, keyed by each notification's own deterministic id. Lazy-written — empty means everything's unread. |
+| `savedSearches` (v6) | Named global-search filter sets — the same `list`/`create`/`delete` pattern as `savedReportViews`, applied to a `{text, entityTypes[]}` query blob instead of a `ReportFilters` object. |
 
 Cascading deletes are hand-rolled (IndexedDB has no `ON DELETE CASCADE`) —
 see `deleteProject` and `deleteTask` in `src/lib/queries/`. Deleting a
 project walks every task through `deleteTask` (which itself cleans up that
-task's subtasks/attachments/customFieldValues/dependencies/recurrence, and
-now `timeEntries`/a matching `activeTimer` too) and then clears the
-project's own statuses/fields/milestones/`automationRules`/
-`automationRunLog`, all inside Dexie transactions. If you add a table with
-a foreign key into `projects` or `tasks`, wire its cleanup into the
-matching delete function. `deletePerson` (`src/lib/queries/people.ts`) and
-`deleteTask` (for `automationRunLog` specifically) are the exceptions to
-"cascade everything": `deletePerson` deletes the person's own
-`personTimeOff` rows and clears a matching `activeTimer`, but deliberately
-leaves their `timeEntries` in place — a logged hour stays a real historical
-fact even after the person record is removed (the UI resolves a missing
-`personId` to "Deleted person" rather than crashing), the same reasoning
-`deleteMilestone` already uses for tasks that referenced a deleted
-milestone. `deleteTask` leaves `automationRunLog` rows referencing that
-task alone for the identical reason (a past automation firing is a
-historical fact); `deleteProject` still clears both `automationRules` and
-`automationRunLog` for the whole project, since there's no project-scoped
-view left to ever read an orphaned log row again — see AGENTS.md.
+task's subtasks/attachments/customFieldValues/dependencies/recurrence,
+`timeEntries`/a matching `activeTimer`, and now its `comments`/task-scoped
+`notificationReadState` rows too) and then clears the project's own
+statuses/fields/milestones/`automationRules`/`automationRunLog`/
+`comments`/`fieldChangeLog`, all inside Dexie transactions. If you add a
+table with a foreign key into `projects` or `tasks`, wire its cleanup into
+the matching delete function. `deletePerson` (`src/lib/queries/people.ts`)
+and `deleteTask` (for `automationRunLog`/`fieldChangeLog` specifically) are
+the exceptions to "cascade everything": `deletePerson` deletes the
+person's own `personTimeOff` rows and clears a matching `activeTimer`, but
+deliberately leaves their `timeEntries` in place — a logged hour stays a
+real historical fact even after the person record is removed (the UI
+resolves a missing `personId` to "Deleted person" rather than crashing),
+the same reasoning `deleteMilestone` already uses for tasks that referenced
+a deleted milestone. `deleteTask` leaves `automationRunLog`/
+`fieldChangeLog` rows referencing that task alone for the identical reason
+(a past automation firing or field edit is a historical fact); `comments`
+are different — they're owned content, not a log, so `deleteTask` *does*
+cascade them, the same as subtasks/attachments. `deleteProject` still
+clears `automationRules`/`automationRunLog`/`fieldChangeLog`/`comments` for
+the whole project, since there's no project-scoped view left to ever read
+an orphaned row again — see AGENTS.md.
 
 ## Project structure
 
@@ -573,25 +642,37 @@ src/
       capacity.ts                 Phase 4: person x week allocated-vs-capacity workload grid
       budget.ts                   Phase 4: actual/estimated cost per task/project
       risks.ts                    Phase 5: overdue-dependency/budget/milestone risk register
+      activity.ts                  Phase 6: merges field changes + comments + automation log into one feed
+      notifications.ts             Phase 6: deadline/automation/risk notifications + digest, computed live
     ai/                       Phase 5: pluggable AI client + feature logic, no React
       client.ts                  chatCompletion/listLmStudioModels/testAiProviderConnection — 3 provider shapes
       summary.ts                  Project-summary context builder + prompt
       nl-query.ts                  NL question -> ReportFilters, with defensive coercion
     chart-theme.ts           Shared Recharts colors/styles (CSS-var-backed, theme-reactive)
     format.ts                Phase 4: shared hours/currency/duration formatting
+    search.ts                 Phase 6: substring search across projects/tasks/comments
     queries/                CRUD + cascade-delete functions, one file per entity
       report-views.ts          Saved report-view CRUD (Phase 3)
       people.ts                 Phase 4: people + PTO CRUD
       time-entries.ts            Phase 4: manual time entries + the global timer's start/stop
       automations.ts              Phase 5: rule CRUD + trigger/condition/action engine + run log
       ai-config.ts                 Phase 5: AI provider config CRUD
+      comments.ts                   Phase 6: comment thread CRUD
+      activity.ts                    Phase 6: field-change diffing + writes (called from tasks.ts/projects.ts) + reads
+      notifications.ts               Phase 6: notification read-state CRUD
+      saved-searches.ts              Phase 6: saved-search CRUD (mirrors report-views.ts)
   hooks/                    useLiveQuery wrappers (reactive reads) + theme context
     use-people.ts              Phase 4
     use-time-entries.ts         Phase 4 (includes useActiveTimer)
     use-automations.ts           Phase 5
     use-ai-config.ts              Phase 5
+    use-comments.ts                Phase 6
+    use-activity.ts                 Phase 6: per-task/per-project merged feed
+    use-notifications.ts             Phase 6: the full live-computed notification list
+    use-saved-searches.ts             Phase 6
   components/
     ui/                      shadcn-generated primitives (owned, customized — see index.css)
+                              command.tsx/input-group.tsx (Phase 6) generated by `npx shadcn add command`
     layout/                   App shell: sidebar, mobile drawer, nav registry, theme toggle
     projects/                  Project card, create/edit dialog, health badge, project picker (Board/Gantt landing)
     tasks/                      Table, inline-edit cells, status/priority selects, task detail panel + its sub-panels
@@ -610,11 +691,17 @@ src/
     budget/                    Phase 4: ProjectBudgetPanel (the project detail page's Budget tab)
     automations/                Phase 5: AutomationRulesManager, AutomationRuleForm, AutomationRunLogList
     ai/                         Phase 5: ProjectSummaryPanel (+ shared AiNotConfiguredNotice)
+    comments/                    Phase 6: CommentsPanel, CommentItem
+    activity/                    Phase 6: ActivityFeed (task/project detail tabs)
+    notifications/                Phase 6: NotificationBell, NotificationPanel (+ its Digest tab)
+    search/                        Phase 6: CommandPalette (Cmd/Ctrl+K)
   pages/                     Route-level components (ProjectsPage, ProjectDetailPage, AllTasksPage,
                               BoardPage(+Picker), GanttPage(+Picker), CalendarPage, TimelinePage,
                               WorkloadPage, TimesheetsPage — Phase 4,
                               DashboardPage — lazy-loaded, see App.tsx,
                               RisksPage, AiSettingsPage, AskPage — Phase 5)
+                              -- Phase 6 has no new pages: the notification bell and Cmd/Ctrl+K search
+                                 are global overlays mounted in AppShell, not routes.
 ```
 
 ## Known trade-offs (intentional, revisit if a later phase needs otherwise)
@@ -673,3 +760,24 @@ src/
   `ReportFilters` first (see AGENTS.md) if a future question needs a field
   it doesn't have yet, rather than asking the model to interpret something
   the filter layer can't express.
+- Notifications (Phase 6) are computed live from real data on every render,
+  never persisted — only *read state* is stored. A notification's "at"
+  timestamp and content can never go stale, but there's also no history of
+  notifications that have since resolved (e.g. a task that was overdue and
+  got completed just stops producing one, with no record it ever fired).
+  Revisit only if a future need genuinely requires a notification history,
+  not just "what needs my attention right now."
+- The digest (Phase 6) is an in-app summary view, not a scheduled or sent
+  email/push notification — this app has no backend to send from. If a
+  future phase adds one, the digest's period-math (`computeDigest`) is
+  already the right place to reuse, not rewrite.
+- Global search (Phase 6) is plain case-insensitive substring matching, not
+  fuzzy/ranked — fine at personal-project scale, matching the same
+  trade-off `DependenciesPanel`'s own task-search popover already accepts.
+  Revisit with real ranking only if the result set grows large enough that
+  substring matches start feeling noisy.
+- Opening a task from global search or a notification uses a second,
+  app-shell-level `TaskDetailSheet` instance separate from the page-local
+  one most pages already manage for their own in-page task rows — in the
+  narrow case where both are triggered at once, two sheets can theoretically
+  be open simultaneously. See AGENTS.md's Global search section.

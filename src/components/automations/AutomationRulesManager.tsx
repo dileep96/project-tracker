@@ -42,8 +42,9 @@ export function AutomationRulesManager({ projectId }: { projectId: string }) {
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-muted-foreground">
-        Trigger + optional condition + actions this app can already do to a task. A "notify" action has no delivery
-        target yet (no notification center until Phase 6) — it writes to the run log below and shows a toast instead.
+        Trigger + optional condition + actions this app can already do to a task. Every firing writes a row to the
+        run log below, shows a toast, and shows up in the notification center (bell icon) — a "notify" action's
+        delivery IS that, not a separate email/push channel this app doesn't have.
       </p>
 
       {(rules ?? []).length === 0 ? (

@@ -14,6 +14,8 @@ import { CustomFieldsPanel } from "@/components/tasks/CustomFieldsPanel";
 import { DependenciesPanel } from "@/components/tasks/DependenciesPanel";
 import { RecurrencePanel } from "@/components/tasks/RecurrencePanel";
 import { TaskTimePanel } from "@/components/tasks/TaskTimePanel";
+import { CommentsPanel } from "@/components/comments/CommentsPanel";
+import { ActivityFeed } from "@/components/activity/ActivityFeed";
 import { useTask } from "@/hooks/use-tasks";
 import { useTaskStatuses } from "@/hooks/use-task-statuses";
 import { useMilestones } from "@/hooks/use-milestones";
@@ -69,9 +71,10 @@ export function TaskDetailSheet({ taskId, onClose }: { taskId: string | null; on
             </SheetHeader>
 
             <Tabs defaultValue="details" className="min-h-0 flex-1">
-              {/* overflow-x-auto: 7 tabs no longer fit the sheet's own width at mobile widths (this
-                  grew from 6 to 7 in Phase 4 with the new Time tab) — scroll horizontally within
-                  the tab bar itself rather than letting it push past the sheet's edge. */}
+              {/* overflow-x-auto: tabs no longer fit the sheet's own width at mobile widths once
+                  this grew past 6 (Phase 4's Time tab, now Phase 6's Comments/Activity) — scroll
+                  horizontally within the tab bar itself rather than letting it push past the
+                  sheet's edge. See AGENTS.md. */}
               <TabsList className="mx-4 mt-3 w-[calc(100%-2rem)] justify-start overflow-x-auto">
                 <TabsTrigger value="details">Details</TabsTrigger>
                 <TabsTrigger value="time">Time</TabsTrigger>
@@ -80,6 +83,8 @@ export function TaskDetailSheet({ taskId, onClose }: { taskId: string | null; on
                 <TabsTrigger value="fields">Fields</TabsTrigger>
                 <TabsTrigger value="links">Links</TabsTrigger>
                 <TabsTrigger value="repeat">Repeat</TabsTrigger>
+                <TabsTrigger value="comments">Comments</TabsTrigger>
+                <TabsTrigger value="activity">Activity</TabsTrigger>
               </TabsList>
 
               <div className="h-[calc(100dvh-11rem)] overflow-y-auto">
@@ -186,6 +191,14 @@ export function TaskDetailSheet({ taskId, onClose }: { taskId: string | null; on
                     isRecurring={task.isRecurring}
                     hasDate={task.startDate !== null || task.dueDate !== null}
                   />
+                </TabsContent>
+
+                <TabsContent value="comments" className="px-4 py-4">
+                  <CommentsPanel entityType="task" entityId={task.id} />
+                </TabsContent>
+
+                <TabsContent value="activity" className="px-4 py-4">
+                  <ActivityFeed scope={{ type: "task", taskId: task.id }} />
                 </TabsContent>
               </div>
             </Tabs>

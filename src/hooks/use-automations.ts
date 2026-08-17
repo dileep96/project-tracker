@@ -17,3 +17,8 @@ export function useAutomationRunLog(projectId: string | undefined, limit = 50): 
     return rows.sort((a, b) => b.firedAt - a.firedAt).slice(0, limit);
   }, [projectId, limit]);
 }
+
+/** Every firing across every project — the Phase 6 notification center is global, unlike the project-scoped `useAutomationRunLog` above. */
+export function useAllAutomationRunLog(): AutomationRunLogEntry[] | undefined {
+  return useLiveQuery(() => db.automationRunLog.toArray(), []);
+}

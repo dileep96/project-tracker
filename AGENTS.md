@@ -7,7 +7,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 ## Start here
 
 Read `README.md` first — it covers running the app, the design system, the
-full Dexie schema (version 5) table-by-table, the four Phase 2 views
+full Dexie schema (version 6) table-by-table, the four Phase 2 views
 (Kanban/Gantt/Calendar/Timeline), the Phase 3 analytics dashboard (KPIs,
 burndown/burnup, portfolio rollup, resource heatmap, trend charts,
 drill-down, report builder), the Phase 4 workload/capacity view, time
@@ -16,8 +16,11 @@ tracking (timer + manual entries + timesheets), and budget tracking
 formula), the recurring-task generation mechanism, the Phase 5 automation
 engine (triggers/conditions/actions, the run log Phase 6 reads), the risk
 register, the pluggable AI provider client (LM Studio/OpenAI/Azure) and its
-settings page, AI project summaries, natural-language task querying, and
-known trade-offs. This file only adds what isn't already there.
+settings page, AI project summaries, natural-language task querying, the
+Phase 6 comments/activity-feed/audit-log system, the notification center
+(deadline reminders, automation events, risks, and an in-app digest), and
+global search with saved filters, and known trade-offs. This file only
+adds what isn't already there.
 
 ## Sharp edges
 
@@ -34,22 +37,33 @@ known trade-offs. This file only adds what isn't already there.
   `flex-1` children. Use a plain `<div className="overflow-y-auto">` with
   an explicit height instead (see `TaskDetailSheet`).
 - Dexie schema changes belong in a new `db.version(N).stores({...})` call in
-  `src/lib/db.ts`, never an edit to an existing version (currently 4) — see
+  `src/lib/db.ts`, never an edit to an existing version (currently 6) — see
   README's Dexie section. A version's `.upgrade()` callback can touch any
   table in the database via `tx.table(name)`, not just ones listed in that
   version's own `.stores()` — v4 backfills plain (non-indexed) new fields
   on `tasks`/`projects` this way without redeclaring their index strings as
-  changed. Only list a table in `.stores()` when its *indexes* change.
+  changed. Only list a table in `.stores()` when its *indexes* change. v6
+  (Phase 6: `comments`/`fieldChangeLog`/`notificationReadState`/
+  `savedSearches`) needed no `.upgrade()` — same as v3/v5, every one of its
+  tables is brand-new, nothing to backfill.
 - IndexedDB has no cascading deletes. Any new table with a foreign key into
   `projects` or `tasks` needs its cleanup wired into `deleteProject`/
   `deleteTask` in `src/lib/queries/`. Same goes for the self-referencing FK
   `Task.recurrenceParentId` — `deleteTask` already cascades template ->
   generated instances; extend that helper, don't add a second deletion path.
   `deleteTask`'s cascade now also covers `timeEntries`/`activeTimers`
-  (Phase 4); `deletePerson` (`queries/people.ts`) is a deliberate partial
+  (Phase 4) and `comments`/task-scoped `notificationReadState` rows (Phase
+  6); `deletePerson` (`queries/people.ts`) is a deliberate partial
   exception — it cascades `personTimeOff` but leaves `timeEntries` alone,
   since a logged hour is a historical fact independent of whether the
-  person record still exists (see README's Phase 4 section).
+  person record still exists (see README's Phase 4 section). Phase 6 adds
+  one more flavor of exception, the same "content dies with its owner, logs
+  survive as history" split `automationRunLog` already established:
+  `comments` are owned content, cascaded on `deleteTask` like subtasks/
+  attachments; `fieldChangeLog` is a log, so `deleteTask` deliberately
+  leaves a task's own rows in place (same reasoning as `automationRunLog`)
+  and only `deleteProject`'s project-wide sweep clears them, once there's
+  no view left that could ever read an orphaned row again.
 - **`<input type="number">`'s `min` and `step` must land on the same grid,
   or the browser silently rejects otherwise-valid values.** `min={0.05}
   step={0.25}` looks like "smallest entry 0.05, quarter-hour increments"
@@ -316,6 +330,121 @@ explicitly ("do NOT invent a dateFrom for it") fixed it. Assume small local
 models need this level of explicitness in any future prompt tweak here —
 verify against a real model response, don't assume prompt wording that
 "reads clearly" to a human will be followed by the model you're targeting.
+
+## Comments, activity feed & audit log (Phase 6) — `src/lib/queries/{comments,activity}.ts`, `src/lib/analytics/activity.ts`
+
+`Comment` (task or project threads) and `FieldChangeLogEntry` (the audit
+log) are both new v6 tables. Both denormalize `projectId` (a task's own
+project, or the entity's own id for a project row) and a frozen
+`entityTitle` — the same "stays readable after the source is renamed or
+deleted" choice `AutomationRunLogEntry.taskTitle`/`ruleName` already made.
+This denormalization is what makes the *project-scoped* activity feed one
+indexed query (`.where("projectId").equals(id)`) instead of a per-task
+fan-out, and it's also why a project's own Activity tab already **is** the
+"combined" view the brief asked for — it pulls in every one of that
+project's tasks' field changes/comments/automation firings, not just the
+project's own, so there's no separate fourth "combined" page.
+
+- **Tracked task fields** (`updateTask`, `src/lib/queries/tasks.ts`):
+  `title`, `statusId` (resolved to the status's `name`, not the raw id),
+  `priority`, `assignee`, `startDate`, `dueDate`, `completedAt` (logged as
+  "Completed"/"Not completed", not a raw timestamp). **Tracked project
+  fields** (`updateProject`, `queries/projects.ts`): `name`, `status`,
+  `health`. Anything not in these lists (description, tags, custom field
+  values, ...) isn't audited — a deliberate scope match to "meaningful
+  enough to read back as history," the same bar the automation engine's own
+  condition fields (priority/tag/assignee) already set. Extend
+  `TRACKED_TASK_FIELDS`/`TRACKED_PROJECT_FIELDS` in `queries/activity.ts`
+  (and the union types in `db.ts`) if a future need justifies more.
+- **Automation actions never write to `fieldChangeLog`.** `applyAction`
+  (automations.ts) mutates via `db.tasks.update` directly, the same bypass
+  of `updateTask` that already keeps automations from chain-triggering
+  (see the Automation engine section above) — and it also means an
+  automation-driven change is visible in the activity feed exactly once,
+  via the `automationRunLog` source, never duplicated as a second
+  "field changed" row for the same real-world event. Verified live: firing
+  a rule that changes priority shows one automation-kind row in the feed,
+  not two.
+- `mergeActivityFeed` (`lib/analytics/activity.ts`) sorts by each item's
+  own event time — a comment's `createdAt`, not a later `editedAt` — so
+  editing a comment doesn't reshuffle its position in the timeline.
+- Comments are owned content (cascade-deleted with their task/project,
+  like subtasks/attachments); `fieldChangeLog` is a log (deleted-task rows
+  deliberately survive, same as `automationRunLog`) — see the cascade-delete
+  sharp edge above for the exact split.
+
+## Notification center (Phase 6) — `src/lib/analytics/notifications.ts`, `NotificationBell`/`NotificationPanel`
+
+Notifications are **computed live, never stored** — same philosophy as the
+Phase 5 risk register and the Phase 3 dashboard. Three sources, each
+reusing existing detection rather than re-implementing it:
+**deadline reminders** (`computeDeadlineNotifications`, new: an incomplete
+task's own `dueDate` vs. today, independent of the risk register's
+dependency-blocking sense of "overdue"), **automation firings**
+(`computeAutomationNotifications`, one notification per `automationRunLog`
+row — the same log the activity feed reads), and **risks**
+(`computeRiskNotifications`, wraps `computeRiskRegister` verbatim, no
+re-detection). `useNotifications` (`hooks/use-notifications.ts`) assembles
+the exact same live-query set `RisksPage` already does for
+`computeRiskRegister`, so the two surfaces can never disagree about what's
+currently a risk.
+
+- **Read/unread state** lives in `notificationReadState`, a lazy-write
+  ledger keyed by each notification's own deterministic id (`deadline:
+  {taskId}`, `automation:{runLogId}`, `risk:{riskId}` — risk ids are
+  already stable per-cause strings from `risks.ts`, not random, which is
+  what makes this join work at all). A row is written only when something
+  is actually marked read; an empty table correctly means "everything
+  unread." This is the same ledger pattern `automationRunLog`'s
+  `[ruleId+taskId]` index already uses for fire-dedup, applied to read-state
+  instead of fire-state.
+- **The digest is a live period summary, not a scheduled/sent anything** —
+  `computeDigest` (same file) counts tasks created/completed/due-in-window,
+  comments posted, and automations run within `[periodStart, periodEnd)`,
+  computed fresh every time the Digest tab renders (Today = since midnight,
+  This week = trailing 7 days, both anchored via `lib/analytics/
+  date-buckets.ts`'s `startOfDay`). "Active risks" in the digest is a
+  snapshot count, not scoped to the period — risks aren't an event stream
+  in this app (no risk-history table), so "N new risks this week" isn't a
+  claim this app can honestly make; the label says "(now)" for exactly
+  that reason. No email/backend anything — this is deliberately just
+  another live-computed view, per the brief.
+- The bell lives in both `AppShell` locations (desktop sidebar footer,
+  mobile header) via one shared `NotificationBell`, opening a `Popover`
+  (not a `Sheet`) — matches how every other compact anchored overlay in
+  this app behaves (Select, DropdownMenu, Tooltip). Clicking a notification
+  marks it read and either opens `TaskDetailSheet` (task-scoped) or
+  navigates to the project page (risk/automation notifications without a
+  `taskId`, e.g. a budget-overrun risk).
+
+## Global search & saved searches (Phase 6) — `src/lib/search.ts`, `CommandPalette`, `savedSearches`
+
+Cmd/Ctrl+K opens a `cmdk`-based command palette (`npx shadcn add command`
+— the one new runtime dependency this phase adds, `cmdk`, plus its
+`input-group.tsx` primitive dependency) searching projects/tasks/comments
+via `searchEntities` — plain case-insensitive substring matching over
+name/title/description/body, no fuzzy scoring, matching the level of
+sophistication `DependenciesPanel`'s own task-search popover already uses
+at this app's personal-project scale. `Command`'s built-in filtering is
+turned off (`shouldFilter={false}`) since the app does its own filtering
+and passes back an already-decided result set.
+
+- **Saved searches** (`savedSearches` table) are the exact `report-views.ts`
+  CRUD pattern copy-pasted for a new domain: `list`/`create`/`delete`, a
+  JSON blob (`SavedSearchQuery`: `text` + `entityTypes[]`) stored verbatim
+  and re-run against live data on load, never a result snapshot. This is
+  now the second instance of this pattern (Phase 3's `savedReportViews`
+  being the first) — reach for it again rather than inventing a new "saved
+  X" shape for a future feature.
+- The global search keydown listener and the single `TaskDetailSheet`/
+  `CommandPalette` instance they open both live in `AppShell`, in a
+  `globalTaskId` state slot **separate from** the page-local `openTaskId`
+  state most pages (`ProjectDetailPage`, `RisksPage`, ...) already manage
+  for their own in-page task rows. Both can theoretically be open at once
+  (a task opened from a project's own table, then a different one opened
+  via Cmd+K) — a known, narrow edge case accepted rather than lifting every
+  page's task-open state into a global context for this phase. Revisit only
+  if it turns out to bite in practice.
 
 ## Maintaining this file
 

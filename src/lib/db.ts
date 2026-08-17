@@ -301,8 +301,10 @@ export type AutomationActionType = "changeStatus" | "changePriority" | "addTag" 
 
 /**
  * Only the fields relevant to `type` are populated. `notify` is the "log-only" action for when a
- * rule's real intent is alerting someone — this app has no notification center yet (Phase 6), so it
- * writes an `AutomationRunLogEntry` and shows a toast instead of any real delivery. See AGENTS.md.
+ * rule's real intent is alerting someone — it writes an `AutomationRunLogEntry` and shows a toast,
+ * same as every other action's firing, no different delivery path of its own. Phase 6's
+ * notification center reads every firing from that same log (not just `notify`-typed ones) rather
+ * than treating `notify` as a special case — see AGENTS.md.
  */
 export interface AutomationAction {
   type: AutomationActionType;
@@ -333,7 +335,9 @@ export interface AutomationRule {
  * denormalized on purpose: this log is a historical record and stays readable even after the rule
  * or task it refers to is later deleted/renamed (see AGENTS.md's cascade-delete note for why task
  * deletion deliberately does NOT clear these rows). This is also the shape Phase 6's notification
- * center is expected to read from — keep it simple and stable, don't grow it ad hoc.
+ * center and activity feed both read from directly (`lib/analytics/notifications.ts`,
+ * `lib/analytics/activity.ts`) rather than duplicating automation-event detection — keep it simple
+ * and stable, don't grow it ad hoc.
  */
 export interface AutomationRunLogEntry {
   id: string;
@@ -365,6 +369,127 @@ export interface AiProviderConfig {
   lmstudio: { baseUrl: string; model: string };
   openai: { apiKey: string; model: string };
   azure: { endpoint: string; deployment: string; apiVersion: string; apiKey: string };
+  updatedAt: number;
+}
+
+// ---------------------------------------------------------------------------
+// Comments (Phase 6) — per-task and per-project threads.
+// ---------------------------------------------------------------------------
+
+export type CommentEntityType = "task" | "project";
+
+/**
+ * `author` is free text, matching `Task.assignee`'s existing no-auth pattern (see AGENTS.md) —
+ * there's no session/login in this app, so "who posted this" is just whatever the composer typed,
+ * the same trade-off the whole app already makes for "who's this assigned to". `projectId` is
+ * denormalized (the task's own `projectId`, or equal to `entityId` for a project-level comment) so
+ * a project's combined activity feed can query every comment under it — its own thread plus every
+ * task's — with one indexed lookup, the same trick `TimeEntry.projectId` already uses. `entityTitle`
+ * is frozen at post time (the task/project's title/name then), mirroring `AutomationRunLogEntry`'s
+ * own denormalized `taskTitle` — it's what lets a project-wide feed label "commented on <title>"
+ * without a live join, and keeps reading after the task itself is renamed or deleted.
+ */
+export interface Comment {
+  id: string;
+  entityType: CommentEntityType;
+  entityId: string;
+  projectId: string;
+  entityTitle: string;
+  author: string;
+  body: string;
+  createdAt: number;
+  /** Set the moment the comment is edited; null if it's never been touched since posting. */
+  editedAt: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// Field-change log (Phase 6) — the audit-log half of the activity feed.
+// ---------------------------------------------------------------------------
+
+export type FieldChangeEntityType = "task" | "project";
+
+/**
+ * Exactly the fields this app tracks — see AGENTS.md for the full rationale. Deliberately not
+ * every field on `Task`/`Project` (e.g. `description`/`tags` aren't tracked): these are the ones
+ * meaningful enough to read back as history, mirroring how the automation engine's own condition
+ * fields (`priority`/`tag`/`assignee`) are a deliberately narrow set rather than "everything".
+ */
+export type TrackedTaskField = "title" | "statusId" | "priority" | "assignee" | "startDate" | "dueDate" | "completedAt";
+export type TrackedProjectField = "name" | "status" | "health";
+
+/**
+ * One row per tracked field edit, written by `recordTaskFieldChanges`/`recordProjectFieldChanges`
+ * (`src/lib/queries/activity.ts`) from inside `updateTask`/`updateProject` — never from automation
+ * actions, which bypass those functions entirely and log to `automationRunLog` instead (see
+ * AGENTS.md's automation section for why actions never go through `updateTask`). This is what
+ * keeps a single field edit from appearing twice in the activity feed once as "status changed" and
+ * once as "rule X ran".
+ *
+ * `fromValue`/`toValue` are already-resolved **display strings** (a status's `name`, not its raw
+ * `statusId`; a formatted date, not an epoch number) computed at write time, not the raw stored
+ * value — the same "freeze a readable string, not a live reference" choice `AutomationRunLogEntry.
+ * summary` already makes, so a later status rename/delete never makes old history unreadable.
+ */
+export interface FieldChangeLogEntry {
+  id: string;
+  entityType: FieldChangeEntityType;
+  entityId: string;
+  /** The task's own `projectId`, or equal to `entityId` for a project-entity row — see `Comment.projectId`. */
+  projectId: string;
+  entityTitle: string;
+  field: TrackedTaskField | TrackedProjectField;
+  fromValue: string | null;
+  toValue: string | null;
+  changedAt: number;
+}
+
+// ---------------------------------------------------------------------------
+// Notification read-state (Phase 6).
+// ---------------------------------------------------------------------------
+
+/**
+ * Notifications themselves are never stored — like the Phase 5 risk register, they're computed
+ * live on every render from real data (overdue/due-soon tasks, `automationRunLog`,
+ * `computeRiskRegister`; see `lib/analytics/notifications.ts`), so a resolved task or a fixed risk
+ * simply stops producing one, with nothing to clean up. This table exists only to remember which
+ * of those *computed* notifications a user has already read, keyed by the same deterministic id
+ * the computation assigns each one (e.g. `deadline:{taskId}`, `automation:{runLogId}`,
+ * `risk:{riskId}`) — the read-state mirror of `automationRunLog`'s own `[ruleId+taskId]` dedupe
+ * ledger, just tracking "seen" instead of "already fired". A row is written lazily, only once a
+ * notification is actually marked read, so an empty table correctly means "everything's unread".
+ */
+export interface NotificationReadState {
+  id: string;
+  /**
+   * Set only for task-scoped (deadline) notifications, so `deleteTask` can clean these up the same
+   * way it cascades every other task-owned row. Left `null` for automation/risk notifications —
+   * their source rows follow `automationRunLog`'s/the risk register's own deletion rules instead
+   * (see AGENTS.md), and a stray leftover boolean row for one of those is the same negligible,
+   * accepted bloat `deleteTask` already tolerates for `automationRunLog`.
+   */
+  taskId: string | null;
+  read: boolean;
+  updatedAt: number;
+}
+
+// ---------------------------------------------------------------------------
+// Saved searches (Phase 6) — same pattern as `SavedReportView` (Phase 3), applied to global search.
+// ---------------------------------------------------------------------------
+
+export type SearchEntityType = "task" | "project" | "comment";
+
+/** `entityTypes: []` means "search everything", matching `ReportFilters`' own "null/empty = no constraint" convention. */
+export interface SavedSearchQuery {
+  text: string;
+  entityTypes: SearchEntityType[];
+}
+
+/** A named global-search filter set, persisted verbatim (not a result snapshot) — re-running it re-searches live data, exactly like `SavedReportView`. */
+export interface SavedSearch {
+  id: string;
+  name: string;
+  query: SavedSearchQuery;
+  createdAt: number;
   updatedAt: number;
 }
 
@@ -411,6 +536,10 @@ class ProjectTrackerDB extends Dexie {
   automationRules!: EntityTable<AutomationRule, "id">;
   automationRunLog!: EntityTable<AutomationRunLogEntry, "id">;
   aiProviderConfig!: EntityTable<AiProviderConfig, "id">;
+  comments!: EntityTable<Comment, "id">;
+  fieldChangeLog!: EntityTable<FieldChangeLogEntry, "id">;
+  notificationReadState!: EntityTable<NotificationReadState, "id">;
+  savedSearches!: EntityTable<SavedSearch, "id">;
 
   constructor() {
     super("project-tracker");
@@ -494,6 +623,21 @@ class ProjectTrackerDB extends Dexie {
       automationRules: "id, projectId, enabled, updatedAt",
       automationRunLog: "id, ruleId, projectId, taskId, firedAt, [ruleId+taskId]",
       aiProviderConfig: "id",
+    });
+
+    // v6 (Phase 6): comments, the field-change audit log, notification read-state, and saved
+    // searches. All four are brand-new tables — like v3/v5, no .upgrade() is needed. `entityId` is
+    // indexed (not `[entityType+entityId]`) because every id in this app is already a globally
+    // unique `crypto.randomUUID()` regardless of which table it names — the same reason
+    // `taskDependencies` indexes plain `taskId` rather than a type-qualified compound key.
+    // `projectId` is indexed on both `comments` and `fieldChangeLog` so a project's *combined*
+    // activity feed (its own rows plus every one of its tasks' rows) is one indexed query, not a
+    // per-task fan-out — see AGENTS.md.
+    this.version(6).stores({
+      comments: "id, entityId, projectId, createdAt",
+      fieldChangeLog: "id, entityId, projectId, changedAt",
+      notificationReadState: "id, taskId",
+      savedSearches: "id, name, updatedAt",
     });
   }
 }

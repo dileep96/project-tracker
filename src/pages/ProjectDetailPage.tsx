@@ -26,6 +26,8 @@ import { CustomFieldDefsManager } from "@/components/tasks/CustomFieldDefsManage
 import { ProjectBudgetPanel } from "@/components/budget/ProjectBudgetPanel";
 import { AutomationRulesManager } from "@/components/automations/AutomationRulesManager";
 import { ProjectSummaryPanel } from "@/components/ai/ProjectSummaryPanel";
+import { CommentsPanel } from "@/components/comments/CommentsPanel";
+import { ActivityFeed } from "@/components/activity/ActivityFeed";
 import { useProject } from "@/hooks/use-projects";
 import { useProjectTasks } from "@/hooks/use-tasks";
 import { useTaskStatuses } from "@/hooks/use-task-statuses";
@@ -115,14 +117,17 @@ export function ProjectDetailPage() {
       </div>
 
       <Tabs defaultValue="tasks">
-        {/* overflow-x-auto: 5 triggers is the same width pressure that hit TaskDetailSheet's tab
-            bar at mobile widths once it grew past 6 (see AGENTS.md) — scroll horizontally within
-            the bar itself rather than letting it push past the page's own edge. */}
+        {/* overflow-x-auto: this tab bar hit the same mobile-width pressure TaskDetailSheet's own
+            tab bar already documents once Phase 6 added Comments/Activity — scroll horizontally
+            within the bar itself rather than letting it push past the page's own edge. See
+            AGENTS.md. */}
         <TabsList className="w-full justify-start overflow-x-auto">
           <TabsTrigger value="tasks">Tasks</TabsTrigger>
           <TabsTrigger value="milestones">Milestones</TabsTrigger>
           <TabsTrigger value="budget">Budget</TabsTrigger>
           <TabsTrigger value="summary">Summary</TabsTrigger>
+          <TabsTrigger value="activity">Activity</TabsTrigger>
+          <TabsTrigger value="comments">Comments</TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
         </TabsList>
 
@@ -150,6 +155,17 @@ export function ProjectDetailPage() {
 
         <TabsContent value="summary" className="pt-4">
           {statuses ? <ProjectSummaryPanel project={project} tasks={tasks} statuses={statuses} /> : null}
+        </TabsContent>
+
+        <TabsContent value="activity" className="pt-4">
+          {/* Project scope pulls in every one of this project's tasks' field changes/comments/
+              automation firings too (see ActivityFeed's doc comment) — this is already the
+              "combined" view, not a separate fourth page. */}
+          <ActivityFeed scope={{ type: "project", projectId: project.id }} />
+        </TabsContent>
+
+        <TabsContent value="comments" className="pt-4">
+          <CommentsPanel entityType="project" entityId={project.id} />
         </TabsContent>
 
         <TabsContent value="settings" className="flex flex-col gap-8 pt-4">

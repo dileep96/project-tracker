@@ -11,6 +11,7 @@ import {
 import { generateId, now } from "@/lib/ids";
 import { normalizeDependencyEdges, wouldCreateCycle } from "@/lib/dependency-graph";
 import { runStatusChangedAutomations, runTaskCreatedAutomations } from "@/lib/queries/automations";
+import { recordTaskFieldChanges, taskPatchTouchesTrackedFields } from "@/lib/queries/activity";
 
 export interface CreateTaskInput {
   projectId: string;
@@ -57,14 +58,19 @@ export async function createTask(input: CreateTaskInput): Promise<Task> {
 }
 
 export async function updateTask(id: string, patch: Partial<Omit<Task, "id" | "createdAt">>): Promise<void> {
-  // Only fetched when the patch actually touches statusId — every other call site (the vast
-  // majority: title/description/dates/tags/assignee edits) skips this extra read entirely.
-  const before = patch.statusId !== undefined ? await db.tasks.get(id) : undefined;
+  // Only fetched when the patch actually touches statusId (for automations) or a Phase 6 tracked
+  // field (for the activity log) — every other call site (e.g. a description edit) skips this
+  // extra read entirely.
+  const needsBefore = patch.statusId !== undefined || taskPatchTouchesTrackedFields(patch);
+  const before = needsBefore ? await db.tasks.get(id) : undefined;
   await db.tasks.update(id, { ...patch, updatedAt: now() });
   if (before && patch.statusId !== undefined && patch.statusId !== before.statusId) {
     const after = await db.tasks.get(id);
     if (after) void runStatusChangedAutomations(after, before.statusId);
   }
+  // Fire-and-forget, same as the automation trigger above — an activity-log write shouldn't make
+  // every task edit wait on it.
+  if (before) void recordTaskFieldChanges(before, patch);
 }
 
 /** Marks a task done/not-done, keeping completedAt in sync for future analytics (cycle time, burndown). */
@@ -95,6 +101,8 @@ async function cascadeDeleteTasks(ids: string[]): Promise<void> {
       db.recurrenceRules,
       db.timeEntries,
       db.activeTimers,
+      db.comments,
+      db.notificationReadState,
     ],
     async () => {
       for (const id of ids) {
@@ -111,6 +119,13 @@ async function cascadeDeleteTasks(ids: string[]): Promise<void> {
         await db.timeEntries.where("taskId").equals(id).delete();
         const runningTimer = await db.activeTimers.get("current");
         if (runningTimer?.taskId === id) await db.activeTimers.delete("current");
+        // Phase 6: a task's own comment thread is owned content, deleted with it (same treatment
+        // as subtasks/attachments above) — unlike `fieldChangeLog`/`automationRunLog`, which are
+        // historical logs deliberately left in place, see AGENTS.md. Deadline-notification
+        // read-state for this task is cleaned up too; automation/risk read-state rows are left
+        // (see `NotificationReadState.taskId`'s doc comment in db.ts).
+        await db.comments.where("entityId").equals(id).delete();
+        await db.notificationReadState.where("taskId").equals(id).delete();
       }
       await db.tasks.bulkDelete(ids);
     }
