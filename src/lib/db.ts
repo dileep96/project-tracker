@@ -22,6 +22,15 @@ export interface Project {
   health: ProjectHealth;
   /** Dollar budget estimate for the whole project, or null when unset. Added in schema v4 — the top-down number the Budget tab and the dashboard's "Budget burn rate" KPI compare actual cost against. See `lib/analytics/budget.ts`. */
   budgetEstimate: number | null;
+  /**
+   * Optional real-world "when does this project start" date (start-of-day epoch ms), or null.
+   * Added in schema v7 (Phase 7) as the anchor a project template's relative task-date offsets are
+   * computed against — deliberately separate from `createdAt`, which is just this row's insertion
+   * timestamp and stops meaning "project start" the moment a project is planned ahead of when it's
+   * entered into the app. Falls back to `createdAt` wherever an anchor is needed and this is unset
+   * (see `lib/queries/templates.ts`).
+   */
+  startDate: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -493,6 +502,79 @@ export interface SavedSearch {
   updatedAt: number;
 }
 
+// ---------------------------------------------------------------------------
+// Project templates (Phase 7) — a reusable snapshot of one project's shape.
+// ---------------------------------------------------------------------------
+
+/** A snapshot of one status row — no id; materialized fresh (with a brand-new id) on every "create from template". */
+export interface TemplateTaskStatus {
+  name: string;
+  order: number;
+  isDefault: boolean;
+}
+
+/**
+ * A snapshot of one *project-scoped* custom field def. Global (`projectId: null`) defs aren't
+ * snapshotted here — they already apply to every project automatically, template or not; only a
+ * template task's *value* in a global field needs to travel with the template (see
+ * `TemplateTask.customFieldValues`).
+ */
+export interface TemplateCustomFieldDef {
+  name: string;
+  type: CustomFieldType;
+  options: string[] | null;
+  order: number;
+}
+
+/**
+ * One template task. Dates are stored as **day offsets from the source project's own start**
+ * (`startDate ?? createdAt`), never absolute timestamps, so materializing the same template into
+ * two different projects correctly produces two different sets of dates — e.g. "due 3 days after
+ * project start" — anchored to each new project's own `startDate`, never the original's. See
+ * README's Phase 7 section for the full worked example. `customFieldValues` is keyed by field
+ * **name**, not `fieldId` — a materialized project's custom field defs get fresh ids, and global
+ * fields are resolved by name against whatever already exists in the live database at materialize
+ * time — the same exact-name-match join `Task.assignee` already uses against `Person`.
+ */
+export interface TemplateTask {
+  id: string;
+  title: string;
+  description: string;
+  priority: TaskPriority;
+  /** Resolved against this template's own `statuses` list by name (see `ProjectTemplate.statuses`). */
+  statusName: string;
+  assignee: string;
+  tags: string[];
+  estimatedHours: number | null;
+  startOffsetDays: number | null;
+  dueOffsetDays: number | null;
+  customFieldValues: Record<string, string>;
+}
+
+/**
+ * A reusable project shape, saved from an existing project via `saveProjectAsTemplate`
+ * (`src/lib/queries/templates.ts`) and materialized into a brand-new project — with fresh ids
+ * throughout and every date recomputed from the new project's own start date — via
+ * `createProjectFromTemplate`. `sourceProjectId` is purely informational (shown as "based on
+ * <project>" in the UI): a template is a fully-baked snapshot, not a live reference, so deleting the
+ * source project afterward leaves every template made from it untouched — the same "snapshot
+ * survives its source" choice this app already makes for `AutomationRunLogEntry`/`Comment`
+ * denormalization. Deliberately does **not** capture task dependencies, subtasks, milestones, or
+ * recurrence rules — see AGENTS.md for the scope rationale; extend `TemplateTask` if a future need
+ * justifies more.
+ */
+export interface ProjectTemplate {
+  id: string;
+  name: string;
+  description: string;
+  sourceProjectId: string | null;
+  statuses: TemplateTaskStatus[];
+  customFieldDefs: TemplateCustomFieldDef[];
+  tasks: TemplateTask[];
+  createdAt: number;
+  updatedAt: number;
+}
+
 /** Suggested defaults surfaced in the UI; the field itself stays free text. */
 export const PROJECT_STATUS_SUGGESTIONS = [
   "Planning",
@@ -540,6 +622,7 @@ class ProjectTrackerDB extends Dexie {
   fieldChangeLog!: EntityTable<FieldChangeLogEntry, "id">;
   notificationReadState!: EntityTable<NotificationReadState, "id">;
   savedSearches!: EntityTable<SavedSearch, "id">;
+  projectTemplates!: EntityTable<ProjectTemplate, "id">;
 
   constructor() {
     super("project-tracker");
@@ -639,6 +722,25 @@ class ProjectTrackerDB extends Dexie {
       notificationReadState: "id, taskId",
       savedSearches: "id, name, updatedAt",
     });
+
+    // v7 (Phase 7): project templates, plus `Project.startDate` — the anchor a template's relative
+    // task-date offsets are computed against. `projects` is redeclared here (its index string is
+    // unchanged from v4/v1) purely to backfill the new plain field, the same pattern v4 already used
+    // for `budgetEstimate`/`estimatedHours` — see README's Dexie schema section. `projectTemplates`
+    // is a brand-new table, so it needs no backfill of its own.
+    this.version(7)
+      .stores({
+        projects: "id, status, health, createdAt, updatedAt",
+        projectTemplates: "id, name, updatedAt",
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table("projects")
+          .toCollection()
+          .modify((project) => {
+            if (project.startDate === undefined) project.startDate = null;
+          });
+      });
   }
 }
 

@@ -23,6 +23,8 @@ import { EstimateCell } from "@/components/tasks/cells/EstimateCell";
 import { TASK_PRIORITIES, type Project, type Task, type TaskPriority, type TaskStatus } from "@/lib/db";
 import { cn } from "@/lib/utils";
 import { deleteTask, setTaskCompleted, updateTask } from "@/lib/queries/tasks";
+import { useCurrentRole } from "@/hooks/use-role";
+import { hasPermission } from "@/lib/permissions";
 
 type SortKey = "title" | "status" | "priority" | "startDate" | "dueDate" | "project" | "createdAt";
 type SortDirection = "asc" | "desc";
@@ -62,6 +64,7 @@ export function TaskTable({
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [page, setPage] = useState(0);
   const [pendingDelete, setPendingDelete] = useState<Task | null>(null);
+  const role = useCurrentRole();
 
   const statusName = useCallback(
     (task: Task) => statusesForProject(task.projectId).find((s) => s.id === task.statusId)?.name ?? "",
@@ -356,6 +359,7 @@ export function TaskTable({
                           variant="ghost"
                           size="icon-sm"
                           aria-label="Delete task"
+                          disabled={!hasPermission(role, "task:delete")}
                           onClick={() => setPendingDelete(task)}
                         >
                           <Trash />

@@ -16,6 +16,7 @@ export interface CreateProjectInput {
   status?: string;
   health?: ProjectHealth;
   budgetEstimate?: number | null;
+  startDate?: number | null;
 }
 
 export async function createProject(input: CreateProjectInput): Promise<Project> {
@@ -28,6 +29,7 @@ export async function createProject(input: CreateProjectInput): Promise<Project>
     status: input.status ?? "Planning",
     health: input.health ?? "green",
     budgetEstimate: input.budgetEstimate ?? null,
+    startDate: input.startDate ?? null,
     createdAt: timestamp,
     updatedAt: timestamp,
   };

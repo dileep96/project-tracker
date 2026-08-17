@@ -73,9 +73,16 @@ export async function updateTask(id: string, patch: Partial<Omit<Task, "id" | "c
   if (before) void recordTaskFieldChanges(before, patch);
 }
 
-/** Marks a task done/not-done, keeping completedAt in sync for future analytics (cycle time, burndown). */
+/**
+ * Marks a task done/not-done, keeping completedAt in sync for future analytics (cycle time,
+ * burndown). Routes through `updateTask` (not a direct `db.tasks.update`) so a checkbox-driven
+ * completion is tracked-field-logged to the activity feed the same as any other way of touching
+ * `completedAt` — `completedAt` is one of `TRACKED_TASK_FIELDS` (see db.ts), and this is this
+ * app's single most common way of changing it (the row checkbox in `TaskTable`), so it needs the
+ * same audit trail every other tracked-field edit gets.
+ */
 export async function setTaskCompleted(id: string, completed: boolean): Promise<void> {
-  await db.tasks.update(id, { completedAt: completed ? now() : null, updatedAt: now() });
+  await updateTask(id, { completedAt: completed ? now() : null });
 }
 
 /**

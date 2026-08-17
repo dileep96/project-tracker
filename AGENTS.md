@@ -7,7 +7,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 ## Start here
 
 Read `README.md` first — it covers running the app, the design system, the
-full Dexie schema (version 6) table-by-table, the four Phase 2 views
+full Dexie schema (version 7) table-by-table, the four Phase 2 views
 (Kanban/Gantt/Calendar/Timeline), the Phase 3 analytics dashboard (KPIs,
 burndown/burnup, portfolio rollup, resource heatmap, trend charts,
 drill-down, report builder), the Phase 4 workload/capacity view, time
@@ -19,8 +19,9 @@ register, the pluggable AI provider client (LM Studio/OpenAI/Azure) and its
 settings page, AI project summaries, natural-language task querying, the
 Phase 6 comments/activity-feed/audit-log system, the notification center
 (deadline reminders, automation events, risks, and an in-app digest), and
-global search with saved filters, and known trade-offs. This file only
-adds what isn't already there.
+global search with saved filters, the Phase 7 project-template system,
+JSON/CSV import-export, the RBAC scaffolding, and known trade-offs. This
+file only adds what isn't already there.
 
 ## Sharp edges
 
@@ -37,7 +38,7 @@ adds what isn't already there.
   `flex-1` children. Use a plain `<div className="overflow-y-auto">` with
   an explicit height instead (see `TaskDetailSheet`).
 - Dexie schema changes belong in a new `db.version(N).stores({...})` call in
-  `src/lib/db.ts`, never an edit to an existing version (currently 6) — see
+  `src/lib/db.ts`, never an edit to an existing version (currently 7) — see
   README's Dexie section. A version's `.upgrade()` callback can touch any
   table in the database via `tx.table(name)`, not just ones listed in that
   version's own `.stores()` — v4 backfills plain (non-indexed) new fields
@@ -45,7 +46,10 @@ adds what isn't already there.
   changed. Only list a table in `.stores()` when its *indexes* change. v6
   (Phase 6: `comments`/`fieldChangeLog`/`notificationReadState`/
   `savedSearches`) needed no `.upgrade()` — same as v3/v5, every one of its
-  tables is brand-new, nothing to backfill.
+  tables is brand-new, nothing to backfill. v7 (Phase 7) mixes both: a
+  brand-new `projectTemplates` table (no backfill) plus one plain field,
+  `Project.startDate`, backfilled to `null` the same way v4 backfilled
+  `budgetEstimate`/`estimatedHours`.
 - IndexedDB has no cascading deletes. Any new table with a foreign key into
   `projects` or `tasks` needs its cleanup wired into `deleteProject`/
   `deleteTask` in `src/lib/queries/`. Same goes for the self-referencing FK
@@ -63,7 +67,14 @@ adds what isn't already there.
   attachments; `fieldChangeLog` is a log, so `deleteTask` deliberately
   leaves a task's own rows in place (same reasoning as `automationRunLog`)
   and only `deleteProject`'s project-wide sweep clears them, once there's
-  no view left that could ever read an orphaned row again.
+  no view left that could ever read an orphaned row again. Phase 7's
+  `projectTemplates` is a third flavor, deliberately **not** wired into
+  either cascade at all: a template is a fully-baked snapshot (every field
+  copied by value at save time, see `saveProjectAsTemplate`), not a live FK
+  reference to the project it was made from, so deleting that source
+  project leaves every template made from it untouched — same "snapshot
+  outlives its source" reasoning as the two logs above, just with zero
+  cleanup needed instead of a project-wide sweep.
 - **`<input type="number">`'s `min` and `step` must land on the same grid,
   or the browser silently rejects otherwise-valid values.** `min={0.05}
   step={0.25}` looks like "smallest entry 0.05, quarter-hour increments"
@@ -129,11 +140,38 @@ adds what isn't already there.
   flagging them and no fix available. `write-excel-file` is a small,
   write-only library (no untrusted-parsing code path) with zero advisories.
   Don't reach for `xlsx` without re-checking whether it's been fixed.
+- **`NotificationBell` and `CommandPalette` (Phase 6) each run their full
+  live-query set even when not visible/open.** `AppShell` mounts one
+  `NotificationBell` in the desktop sidebar and one in the mobile header
+  unconditionally — both stay in the DOM at all times, only CSS-toggled via
+  `hidden`/`md:flex`/`md:hidden`, so `useNotifications()` (7 live Dexie
+  queries + a full `computeRiskRegister()` pass) runs twice on every app
+  render regardless of viewport. `CommandPalette` similarly calls
+  `useProjects`/`useAllTasks`/`useAllComments`/`useSavedSearches`
+  unconditionally at the top of the component even though its dialog body
+  is only shown while `open`. Confirmed real, but deliberately **not**
+  fixed during Phase 7 — both are core Phase 6 code in the shared
+  `AppShell` (loaded on every single page), unrelated to this phase's
+  actual scope, and this app's own documented trade-off bar elsewhere is
+  "fine at personal-project scale." Worth a real fix (lift `useNotifications()`
+  to `AppShell` and pass it down once; gate `CommandPalette`'s hooks behind
+  `open`) if a future phase touches either file anyway.
 - `ProjectFormDialog`'s budget estimate input had `min={0} step={100}` —
   another instance of the min/step-grid bug documented above (fixed here to
   `step={1}`, found while testing Phase 5's risk register against a real
   budget overrun). Any `<input type="number">` you touch, check this grid
   alignment even if it isn't the file you set out to change.
+- **CSV export's blank-assignee placeholder round-trips as literal text.**
+  `buildExportRows` (`lib/analytics/report.ts`) writes `assignee || "Unassigned"`
+  for display — a pre-existing Phase 3 convention, unchanged by Phase 7.
+  Re-importing that exact file via "Import tasks (CSV)" reads the literal
+  cell value, so a task that was unassigned at export time comes back with
+  `assignee: "Unassigned"` (a real string) instead of `""`. Deliberately not
+  special-cased away on import: silently mapping one magic string to empty
+  would incorrectly clobber a task genuinely assigned to a person literally
+  named "Unassigned". Documented trade-off, not a bug to "fix" without
+  changing report.ts's own export convention first (which every other
+  export consumer — the report builder's PDF/Excel — also relies on).
 
 ## Automation engine (Phase 5) — `src/lib/queries/automations.ts`
 
@@ -355,7 +393,16 @@ project's own, so there's no separate fourth "combined" page.
   enough to read back as history," the same bar the automation engine's own
   condition fields (priority/tag/assignee) already set. Extend
   `TRACKED_TASK_FIELDS`/`TRACKED_PROJECT_FIELDS` in `queries/activity.ts`
-  (and the union types in `db.ts`) if a future need justifies more.
+  (and the union types in `db.ts`) if a future need justifies more. This
+  tracking only actually happens for callers that go through `updateTask`
+  itself — `setTaskCompleted` (the row checkbox in `TaskTable`, this app's
+  single most common way of touching `completedAt`) used to call
+  `db.tasks.update` directly and skip it entirely, silently contradicting
+  this section; fixed in Phase 7's final pass (found while gating delete
+  buttons in the same file) to route through `updateTask` instead. Any
+  future task mutator should do the same — write through `updateTask`
+  unless there's a specific reason not to (automations already make that
+  exception deliberately, see below).
 - **Automation actions never write to `fieldChangeLog`.** `applyAction`
   (automations.ts) mutates via `db.tasks.update` directly, the same bypass
   of `updateTask` that already keeps automations from chain-triggering
@@ -445,6 +492,180 @@ and passes back an already-decided result set.
   via Cmd+K) — a known, narrow edge case accepted rather than lifting every
   page's task-open state into a global context for this phase. Revisit only
   if it turns out to bite in practice.
+
+## Project templates (Phase 7) — `src/lib/queries/templates.ts`
+
+A `ProjectTemplate` (schema v7) is a **snapshot by value**, not a live
+reference: `saveProjectAsTemplate` copies the source project's statuses,
+its own project-scoped custom field defs, and every non-generated task
+(`recurrenceParentId !== null` tasks are skipped — the same "not real
+scheduling meaning" reasoning Gantt/Timeline already exclude generated
+instances for) into plain data on the template row itself. Nothing on a
+`ProjectTemplate` is an id pointing back at the source project's own rows
+(`sourceProjectId` is the one exception, and it's purely informational —
+see db.ts's doc comment and the cascade-delete sharp edge above).
+
+- **Dates are day offsets, not absolute timestamps.** Each `TemplateTask`
+  stores `startOffsetDays`/`dueOffsetDays` relative to the source project's
+  `startDate ?? createdAt` (`anchor` in `saveProjectAsTemplate`). Materializing
+  (`createProjectFromTemplate`) recomputes every task's real dates from
+  `addDays(newProject.startDate, offsetDays)` — the *new* project's own
+  start, never the original's. This is the whole point of a template: "due
+  3 days after project start" stays true no matter which project start date
+  you pick later.
+- **Custom field values are keyed by field name, not `fieldId`.** A
+  materialized project gets fresh `CustomFieldDef` ids for its own
+  project-scoped fields (`createFieldDef` per `TemplateCustomFieldDef`), so
+  `TemplateTask.customFieldValues` can't carry the old ids forward — instead
+  it's a `Record<fieldName, value>`, resolved against
+  `listFieldDefsForProject(newProjectId)` (global + the just-created
+  project-scoped fields) by exact name match at materialize time. Same
+  join strategy `Task.assignee` already uses against `Person`.
+- **`createProjectFromTemplate` bulk-replaces the auto-seeded default
+  statuses** (`seedDefaultStatuses` runs inside `createProject`) by deleting
+  them and `bulkAdd`-ing the template's own status snapshot directly,
+  bypassing `deleteStatus`'s one-by-one guardrails (task-in-use check,
+  "at least one status must remain") — safe only because this runs
+  immediately after creating a brand-new, task-free project. Don't reuse
+  this bulk-clear pattern anywhere a project might already have tasks.
+- Deliberately **out of scope for v1**: task dependencies, subtasks,
+  milestones, and recurrence rules aren't captured in a template (see
+  db.ts's `ProjectTemplate` doc comment). Extend `TemplateTask`/the save
+  and materialize functions together if a future need justifies one of
+  these — don't add captured data on one side without the matching
+  materialize-time reconstruction on the other.
+
+## Import / export (Phase 7) — `src/lib/io/{export,import}.ts`
+
+**Export** (`export.ts`) builds an `ExportBundle` — one project's data, or
+every project's — and reuses `triggerBlobDownload` from `lib/analytics/
+report.ts` (exported for this purpose, per the brief's explicit "reuse
+Phase 3's CSV infra" instruction) rather than a second download helper.
+CSV task export doesn't get its own bundle-building function at all: the
+"Export tasks (CSV)" button calls `buildExportRows`/`exportRowsAsCsv`
+directly, the exact functions the Phase 3 report builder already uses.
+
+- **Scope is deliberately narrower than "everything in the DB"**: a
+  project's `attachments` (binary blobs), `comments`/`fieldChangeLog`
+  (Phase 6 logs, not portable "data"), `automationRules`/`automationRunLog`,
+  and time/budget data (`timeEntries`/`people`, which are cross-project, not
+  project-owned) are excluded. In scope: statuses, project-scoped custom
+  field defs (+ every referenced *global* field def, bundled once at the
+  top level, not per-project), milestones, tasks, subtasks, custom field
+  values, and dependencies. This matches exactly what the brief's
+  acceptance criteria names ("tasks, custom fields, dependencies").
+- **A single-project export only keeps dependency edges whose *both*
+  endpoints are inside that project's own task set** — `dependsOnTaskId`
+  isn't project-scoped in this app (see db.ts), so a cross-project edge's
+  target wouldn't exist in a single-project bundle. An "export everything"
+  bundle needs no such filtering; every possible target is already
+  included, so cross-project dependencies survive an "everything" export/
+  import round-trip too.
+- **Import always creates brand-new project(s) with fresh ids throughout**
+  — never overwrites or merges. `importJsonBundle` runs as **one Dexie
+  transaction** across every table it touches: `validateExportBundle`
+  already checked structure/required fields/status references before any
+  write happens, so the only remaining failure mode inside the transaction
+  is a genuinely unexpected error, and the transaction guarantees that
+  failure leaves nothing partially written. Global custom field defs are
+  resolved by exact name+type match against what already exists in the
+  live DB (creating one only on no match) so re-importing the same bundle
+  twice doesn't pile up duplicate global fields. Task id remapping happens
+  in one shared map across every project in the bundle (not per-project),
+  which is what lets cross-project dependency edges resolve correctly in
+  a second pass after every project's tasks exist.
+- **`validateExportBundle` also rejects a bundle containing a circular task
+  dependency**, reusing `wouldCreateCycle` from `dependency-graph.ts` (the
+  same check `addDependency` runs before accepting one new live edge) by
+  adding the bundle's edges one at a time and checking each against
+  everything accepted so far. A self-produced export from this app can
+  never contain a cycle (`addDependency` already prevents that on the live
+  graph), so this only ever fires against a hand-edited/corrupted file —
+  but `Gantt`'s critical-path pass assumes an acyclic graph, so importing
+  one anyway would silently produce wrong critical-path output with no
+  error surfaced. Found and closed in code review before this phase
+  shipped.
+- **JSON import deliberately does not go through `createTask()` and never
+  fires `taskCreated` automations** — `importProjectSkeleton` bulk-inserts
+  task rows directly, unlike CSV import (below), which does fire them. This
+  is intentional, not an oversight (see `importJsonBundle`'s own doc
+  comment): a JSON import can materialize dozens of tasks across multiple
+  projects in one action, and firing every affected project's automation
+  rules against all of them (a `notify` rule alone could spam that many
+  toasts, or a `changeStatus` rule could touch tasks the person importing
+  never intended it to) would make a restore behave unpredictably
+  differently from the export it came from. CSV import is closer to
+  "typing these rows in by hand" one at a time, where firing automations
+  matches what manual entry would already do. If a future need calls for
+  JSON-imported tasks to trigger automations too, make that call explicitly
+  (e.g. a per-import checkbox) rather than silently flipping this default.
+- **CSV task import is all-or-nothing at the validation layer, not
+  transactional at the write layer.** `validateAndParseCsvTasks` parses
+  and checks every row (required "Title" column present; optional
+  Status/Priority/dates validated against the target project's real
+  statuses/`TASK_PRIORITIES`/`YYYY-MM-DD`) *before* anything is written —
+  one bad row rejects the whole file with a specific per-row message. Once
+  validation passes, `importCsvTasks` writes rows sequentially through the
+  normal `createTask()` query function (not a bulk transaction), so each
+  imported task fires `taskCreated` automations and gets tracked-field
+  activity logging exactly like a manually-created task would — the "never
+  partially import" guarantee lives entirely in the up-front validation
+  pass, deliberately not in the write loop. See the CSV round-trip sharp
+  edge above for the one known asymmetry (blank assignee <-> "Unassigned").
+- `parseCsv` in `import.ts` is a hand-rolled RFC 4180 parser (quoted
+  fields, doubled-quote escapes, quoted embedded newlines) — the same
+  dialect `csvCell`/`exportRowsAsCsv` in `report.ts` write, and the same
+  "small enough not to need a dependency" reasoning that module already
+  documents for CSV export.
+
+## Roles & permissions / RBAC scaffolding (Phase 7) — `src/lib/permissions.ts`, `src/hooks/use-role.ts`
+
+**Scaffolding only — nothing in this app actually enforces access control.**
+There's no login, no session, no concept of more than one user. `Role`
+(`"owner" | "editor" | "viewer"`) and a flat `Permission` union live in
+`permissions.ts` as a pure `hasPermission(role, permission)` function over a
+`ROLE_PERMISSIONS` matrix (owner: everything; editor: everything except
+`project:delete`, the one no-undo action in this app; viewer: nothing —
+see the file's own doc comments for the exact list and the reasoning per
+role). `useCurrentRole()` (`hooks/use-role.ts`) is the **one seam**: it
+always returns `"owner"` today, with a doc comment explaining a future
+multi-user phase only needs to replace that hook's body (e.g. with a real
+`projectMembers` table lookup) — every call site already asks the hook
+rather than assuming `"owner"` directly, so real enforcement would need no
+changes anywhere else.
+
+- **Wired into a deliberately small set of real call sites**, not every
+  mutation in the app: project delete (`ProjectDetailPage`, `ProjectCard`),
+  task delete (`TaskTable`), and every brand-new Phase 7 action (save a
+  template, delete a template, create a project from one, JSON/CSV import)
+  — gated with `disabled={!hasPermission(role, "...")}` on the trigger
+  button. Every one of these checks `"template:manage"`/`"project:delete"`/
+  `"task:delete"`/`"data:import"` as appropriate — **gate every mutating
+  action a feature adds, not just the "main" one**; a code-review pass
+  during Phase 7 caught exactly this gap on `CreateProjectFromTemplateDialog`'s
+  per-row delete-template button, which had been left ungated while the
+  same dialog's "save as template"/"create from template" actions were
+  correctly gated. This was a scope choice, not an oversight:
+  gating every create/edit dialog across the whole app would touch dozens
+  of existing files for zero behavior change today (role is always
+  `"owner"`), a lot of surface area to introduce regressions in this
+  codebase's final phase for a feature this app can't yet enforce anyway.
+  Extend the gated set incrementally alongside whatever a future auth phase
+  actually needs to protect, rather than gating speculatively now.
+- **Exports/reads are never gated** — only mutations check a permission.
+  A `Permission` for "can view/export" doesn't exist in the union; add one
+  only if a future phase's role model needs to restrict *reading* data too,
+  which today's scaffold deliberately doesn't model.
+- `Project.owner` (free text, unchanged since Phase 1) is **not** the same
+  concept as `Role` — it's still just a name string, not a `Role` value or
+  a link to any user record. The brief's own suggestion ("a project's
+  Owner field could conceptually map to a role") was considered and
+  deliberately not built: there's no per-project membership model to hang
+  it on without real auth, and forcing `owner` into double duty as a role
+  field would be exactly the kind of "pretend multi-user sync exists"
+  overreach the brief warned against. `Project.startDate` (also new in
+  Phase 7, see the templates section above) is unrelated to this — don't
+  confuse the two new nullable `Project` fields.
 
 ## Maintaining this file
 

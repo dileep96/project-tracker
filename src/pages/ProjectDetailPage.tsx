@@ -28,9 +28,12 @@ import { AutomationRulesManager } from "@/components/automations/AutomationRules
 import { ProjectSummaryPanel } from "@/components/ai/ProjectSummaryPanel";
 import { CommentsPanel } from "@/components/comments/CommentsPanel";
 import { ActivityFeed } from "@/components/activity/ActivityFeed";
+import { ProjectDataSettings } from "@/components/data/ProjectDataSettings";
 import { useProject } from "@/hooks/use-projects";
 import { useProjectTasks } from "@/hooks/use-tasks";
 import { useTaskStatuses } from "@/hooks/use-task-statuses";
+import { useCurrentRole } from "@/hooks/use-role";
+import { hasPermission } from "@/lib/permissions";
 import { deleteProject } from "@/lib/queries/projects";
 
 export function ProjectDetailPage() {
@@ -39,6 +42,7 @@ export function ProjectDetailPage() {
   const project = useProject(projectId);
   const tasks = useProjectTasks(projectId);
   const statuses = useTaskStatuses(projectId);
+  const role = useCurrentRole();
 
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -110,7 +114,12 @@ export function ProjectDetailPage() {
           <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
             <PencilSimple /> Edit
           </Button>
-          <Button variant="outline" size="sm" onClick={() => setDeleteOpen(true)}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!hasPermission(role, "project:delete")}
+            onClick={() => setDeleteOpen(true)}
+          >
             <Trash /> Delete
           </Button>
         </div>
@@ -180,6 +189,10 @@ export function ProjectDetailPage() {
           <section>
             <h2 className="mb-3 text-sm font-semibold">Automations</h2>
             <AutomationRulesManager projectId={project.id} />
+          </section>
+          <section>
+            <h2 className="mb-3 text-sm font-semibold">Data</h2>
+            <ProjectDataSettings project={project} tasks={tasks} statuses={statuses ?? []} />
           </section>
         </TabsContent>
       </Tabs>

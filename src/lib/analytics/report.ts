@@ -105,7 +105,8 @@ export function exportRowsAsCsv(rows: ExportRow[], filename: string): void {
   triggerBlobDownload(blob, filename);
 }
 
-function triggerBlobDownload(blob: Blob, filename: string): void {
+/** Exported for Phase 7's JSON export (`src/lib/io/export.ts`) — reused rather than reimplemented, per AGENTS.md. */
+export function triggerBlobDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;

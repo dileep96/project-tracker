@@ -9,8 +9,9 @@ backlog (not in this repo).
 
 This repo currently implements **Phase 1 (foundation)**, **Phase 2
 (views)**, **Phase 3 (analytics)**, **Phase 4 (resource/time/budget
-tracking)**, **Phase 5 (automation, risk register, AI)**, and **Phase 6
-(comments, activity feed, notifications, search)**: app shell, data layer,
+tracking)**, **Phase 5 (automation, risk register, AI)**, **Phase 6
+(comments, activity feed, notifications, search)**, and **Phase 7
+(templates, import/export, RBAC scaffolding)**: app shell, data layer,
 project/task CRUD, the List/Table view, Kanban board, Gantt chart with
 critical-path analysis, Calendar, the portfolio Timeline, recurring-task
 instance generation, the executive dashboard (KPIs, burndown/burnup,
@@ -23,14 +24,18 @@ register, AI features (a pluggable LM Studio/OpenAI/Azure OpenAI client,
 per-project AI-generated status summaries, and a natural-language task
 query page) behind a settings page at `/settings/ai`, per-task/per-project
 comment threads, a unified activity feed/audit log, an in-app notification
-center with deadline reminders and a digest, and global search
-(Cmd/Ctrl+K) with saved filters. The dashboard's "Budget burn rate" KPI now
-computes a real value from that budget data (see Phase 4 section below) —
-the honest "not enough data yet" state Phase 3 shipped it with only shows
-again if no project has a budget estimate set yet. Real multi-user
-auth/sync, templates, and import-export/RBAC are later phases — Phase 6
-builds *toward* multi-user shape (e.g. a free-text comment author) without
-adding actual accounts.
+center with deadline reminders and a digest, global search (Cmd/Ctrl+K)
+with saved filters, reusable project templates with relative-date task
+generation, JSON export/import (a project or the whole database) and CSV
+export/import for tasks, and a roles/permissions data model laying the
+groundwork for real access control. The dashboard's "Budget burn rate" KPI
+computes a real value from budget data (see Phase 4 section below) — the
+honest "not enough data yet" state Phase 3 shipped it with only shows
+again if no project has a budget estimate set yet. **Real multi-user
+auth/sync is still not implemented** — Phase 7's roles/permissions model
+is scaffolding a future auth phase would enforce, not enforcement itself
+(see "Roles & permissions" below); today's single local user is always the
+most permissive role.
 
 ## Running locally
 
@@ -78,6 +83,12 @@ the schema.
   the Cmd/Ctrl+K palette. Everything else in Phase 6 (comments, the
   activity feed, notifications, saved searches) is plain Dexie + React,
   no new packages.
+- Phase 7 (templates, import/export, RBAC scaffolding) adds **zero new
+  dependencies** — JSON export/import is `JSON.stringify`/`JSON.parse` plus
+  the same `triggerBlobDownload` helper CSV export already uses; CSV import
+  is a small hand-rolled RFC 4180 parser (`src/lib/io/import.ts`), the same
+  "simple enough not to need a package" call `report.ts`'s CSV export
+  already made.
 
 ## Design system
 
@@ -544,7 +555,96 @@ one-click reuse later, persisted the same way Phase 3's report-builder
 saved views are (a `savedSearches` table storing the query itself, re-run
 against live data on load, not a result snapshot).
 
-## Dexie schema (version 6)
+## Project templates, import/export & RBAC scaffolding — Phase 7
+
+### Project templates — a project's Settings tab, and "From template" on `/projects`
+
+**Save as template** (Settings tab → **Data** section, on any project)
+snapshots that project's task statuses, its own custom field defs, and
+every real (non-generated-instance) task into a reusable `ProjectTemplate`
+row. **Create a new project from a template** (`/projects` → "From
+template", shown once at least one template exists) picks a template, a
+name, and a **start date** for the new project, then materializes real
+tasks with statuses/fields/dates recomputed for that project.
+
+The key idea: a template task's dates are stored as **day offsets from the
+source project's own start** (`startDate`, or `createdAt` when unset), not
+as fixed calendar dates — "due 3 days after project start," not "due
+September 4th." Materializing a template recomputes every task's actual
+dates from the *new* project's own start date, so the same template
+produces correctly shifted dates every time it's used, regardless of which
+project's original dates it was captured from. Custom field values follow
+the same "recompute at materialize time" philosophy: they're captured
+keyed by field *name* (not id, since ids are regenerated fresh) and
+resolved against whatever fields actually exist on the new project. A
+template is a frozen snapshot, not a live reference — deleting the source
+project afterward leaves every template made from it untouched.
+
+Deliberately out of scope for this phase: task dependencies, subtasks,
+milestones, and recurrence rules aren't captured by a template (a
+template task always lands as a plain one-off task on the new project).
+See AGENTS.md for the full mechanism and the exact scope rationale.
+
+### Import & export — a project's Settings tab (Data section), and `/projects`
+
+**Export**: a single project (Settings → Data → "Export project (JSON)")
+or the whole database (`/projects` → "Export all") to one JSON file — task
+statuses, custom field defs (project-scoped and global), milestones,
+tasks, subtasks, custom field values, and task dependencies. A project's
+own tasks can also be exported straight to CSV ("Export tasks (CSV)"),
+reusing the exact same `buildExportRows`/`exportRowsAsCsv` functions the
+Phase 3 report builder's own CSV export already uses — no separate export
+pipeline.
+
+**Import**: `/projects` → "Import" accepts a JSON file exported from this
+app (either shape above) and always creates **brand-new project(s)** with
+fresh ids — it never overwrites or merges into existing data, so
+re-importing the same file twice just makes a second copy. A project's own
+Settings tab also has "Import tasks (CSV)", which adds tasks to *that*
+project from a CSV file with the same column set the exporter produces
+(`Title` required; `Status`/`Priority`/`Assignee`/`Start date`/`Due
+date`/`Tags` optional, matched by header name, not column position).
+
+Every import validates the **entire** file before writing anything — a
+malformed JSON file (unparseable, wrong shape, a task referencing a status
+that isn't in the file) or a CSV with a bad row (missing title, an unknown
+status name, an unparseable date) fails with a specific, readable error
+and imports nothing at all, never a partial result. See AGENTS.md for the
+exact validation rules, the JSON importer's id-remapping/transaction
+details, and one known CSV round-trip asymmetry (a blank "Assignee" cell
+round-trips as the literal text "Unassigned", inherited from how the
+existing CSV exporter already displays an unassigned task).
+
+### Roles & permissions (RBAC scaffolding)
+
+This app still has **no real authentication, sessions, or multi-user
+sync** — this phase builds the *shape* a future auth phase would enforce,
+nothing more. `src/lib/permissions.ts` defines three roles (**Owner**,
+**Editor**, **Viewer**) and a small, fixed set of permissions
+(create/edit/delete a project, create/edit/delete a task, manage
+automations, manage templates, run an import) via a pure
+`hasPermission(role, permission)` function — Owner can do everything,
+Editor can do everything except delete a project (the one no-undo action
+in this app), Viewer can do nothing that mutates data. `useCurrentRole()`
+always returns `"owner"` today (there being only one local user, who is
+naturally the most permissive role) — it's the single seam a real
+multi-user phase would replace with an actual session lookup, and nothing
+else in the codebase would need to change.
+
+A deliberately small, real set of actions already call `hasPermission()`
+today — project delete, task delete, and every Phase 7 action (save/apply
+a template, run an import) — so the wiring is genuinely exercised end to
+end, even though every one of those checks currently passes. Gating every
+create/edit action across the whole app was considered and rejected for
+this phase: it would touch dozens of existing files for zero behavior
+change today, without this app having any way to actually enforce a
+different role yet. **To be direct about what this phase does and doesn't
+do**: nothing is actually access-controlled — there's no login screen, no
+account switcher, and no server to enforce anything even if there were.
+See AGENTS.md for the full permission matrix and which call sites are
+wired up.
+
+## Dexie schema (version 7)
 
 All tables live in `src/lib/db.ts`. Every future phase should add a new
 `db.version(N).stores({...})` call (with an `.upgrade()` migration if data
@@ -562,16 +662,19 @@ three more brand-new tables (`automationRules`, `automationRunLog`,
 `aiProviderConfig`) — again no `.upgrade()` needed, same as v3. Version 6
 (Phase 6) adds four more brand-new tables (`comments`, `fieldChangeLog`,
 `notificationReadState`, `savedSearches`) — same as v3/v5, no `.upgrade()`
-needed. Note for future phases: a Dexie upgrade transaction has access to
-every table in the database, not just the ones a given version's
-`.stores()` call lists — v4's `.upgrade()` modifies `tasks`/`projects` rows
-even though their index strings are unchanged from earlier versions; only
-the tables whose *indexes* change need to appear in that version's
-`.stores()` object.
+needed. Version 7 (Phase 7) adds one brand-new table (`projectTemplates`)
+plus one plain field, `Project.startDate` — backfilled to `null` for
+pre-existing rows via `.upgrade()`, the same pattern v4 used for
+`budgetEstimate`/`estimatedHours`. Note for future phases: a Dexie upgrade
+transaction has access to every table in the database, not just the ones a
+given version's `.stores()` call lists — v4's `.upgrade()` modifies
+`tasks`/`projects` rows even though their index strings are unchanged from
+earlier versions; only the tables whose *indexes* change need to appear in
+that version's `.stores()` object.
 
 | Table | Notes |
 |---|---|
-| `projects` | `status` is free text with UI-suggested defaults, not an enum. `health` is `'green' \| 'amber' \| 'red'`. `budgetEstimate` (v4) is a manually-entered dollar figure, or `null`. |
+| `projects` | `status` is free text with UI-suggested defaults, not an enum. `health` is `'green' \| 'amber' \| 'red'`. `budgetEstimate` (v4) is a manually-entered dollar figure, or `null`. `startDate` (v7) is an optional real-world "project start" date, or `null` — the anchor a template's relative task-date offsets are computed against (falls back to `createdAt` when unset). |
 | `taskStatuses` | Each **project** owns its own ordered workflow (seeded with To Do / In Progress / Done on project creation, fully editable). Tasks reference `statusId`, not a name — renaming a status never orphans data. **This table is the column model Phase 2's Kanban board should read directly** (`order` field included). |
 | `tasks` | `statusId` FK into the *same project's* `taskStatuses`. `completedAt` is independent of `statusId` (the row checkbox toggles it) — useful for cycle-time/burndown analytics later without depending on workflow-column semantics. `recurrenceParentId` (v2) FKs to the template task a generated instance came from, or `null`. `estimatedHours` (v4) is effort hours, or `null` — the input every capacity/workload/budget computation is built on. |
 | `subtasks` | Ordered checklist items per task. |
@@ -593,6 +696,7 @@ the tables whose *indexes* change need to appear in that version's
 | `fieldChangeLog` (v6) | One row per tracked `Task`/`Project` field edit — the audit-log half of the activity feed. `fromValue`/`toValue` are already-resolved display strings, not raw stored values. See AGENTS.md for the exact tracked-field list. |
 | `notificationReadState` (v6) | Read/dismissed ledger for the (never-stored) computed notification list, keyed by each notification's own deterministic id. Lazy-written — empty means everything's unread. |
 | `savedSearches` (v6) | Named global-search filter sets — the same `list`/`create`/`delete` pattern as `savedReportViews`, applied to a `{text, entityTypes[]}` query blob instead of a `ReportFilters` object. |
+| `projectTemplates` (v7) | A reusable project shape: task statuses + project-scoped custom field defs + tasks, dates stored as day offsets from the source project's own start rather than fixed dates. `sourceProjectId` is informational only — not a live FK, so deleting the source project doesn't touch templates made from it. See "Project templates" above and AGENTS.md. |
 
 Cascading deletes are hand-rolled (IndexedDB has no `ON DELETE CASCADE`) —
 see `deleteProject` and `deleteTask` in `src/lib/queries/`. Deleting a
@@ -618,7 +722,10 @@ are different — they're owned content, not a log, so `deleteTask` *does*
 cascade them, the same as subtasks/attachments. `deleteProject` still
 clears `automationRules`/`automationRunLog`/`fieldChangeLog`/`comments` for
 the whole project, since there's no project-scoped view left to ever read
-an orphaned row again — see AGENTS.md.
+an orphaned row again — see AGENTS.md. `projectTemplates` (Phase 7) is a
+different case again: it's never touched by `deleteProject` at all, on
+purpose — a template is a snapshot copied by value, not a live reference
+into the source project's rows, so there's nothing to orphan.
 
 ## Project structure
 
@@ -651,6 +758,10 @@ src/
     chart-theme.ts           Shared Recharts colors/styles (CSS-var-backed, theme-reactive)
     format.ts                Phase 4: shared hours/currency/duration formatting
     search.ts                 Phase 6: substring search across projects/tasks/comments
+    permissions.ts            Phase 7: Role/Permission model + hasPermission() — scaffolding, not enforcement
+    io/                        Phase 7: JSON/CSV import & export, no React
+      export.ts                  Build project/full ExportBundle, download as JSON (reuses report.ts's blob helper)
+      import.ts                   Validate + import JSON bundles; parse/validate/import CSV tasks
     queries/                CRUD + cascade-delete functions, one file per entity
       report-views.ts          Saved report-view CRUD (Phase 3)
       people.ts                 Phase 4: people + PTO CRUD
@@ -661,6 +772,7 @@ src/
       activity.ts                    Phase 6: field-change diffing + writes (called from tasks.ts/projects.ts) + reads
       notifications.ts               Phase 6: notification read-state CRUD
       saved-searches.ts              Phase 6: saved-search CRUD (mirrors report-views.ts)
+      templates.ts                    Phase 7: saveProjectAsTemplate / createProjectFromTemplate / list / delete
   hooks/                    useLiveQuery wrappers (reactive reads) + theme context
     use-people.ts              Phase 4
     use-time-entries.ts         Phase 4 (includes useActiveTimer)
@@ -670,6 +782,8 @@ src/
     use-activity.ts                 Phase 6: per-task/per-project merged feed
     use-notifications.ts             Phase 6: the full live-computed notification list
     use-saved-searches.ts             Phase 6
+    use-templates.ts                   Phase 7
+    use-role.ts                         Phase 7: useCurrentRole() — always "owner" today, see AGENTS.md
   components/
     ui/                      shadcn-generated primitives (owned, customized — see index.css)
                               command.tsx/input-group.tsx (Phase 6) generated by `npx shadcn add command`
@@ -695,6 +809,9 @@ src/
     activity/                    Phase 6: ActivityFeed (task/project detail tabs)
     notifications/                Phase 6: NotificationBell, NotificationPanel (+ its Digest tab)
     search/                        Phase 6: CommandPalette (Cmd/Ctrl+K)
+    templates/                      Phase 7: SaveAsTemplateDialog, CreateProjectFromTemplateDialog
+    data/                             Phase 7: ProjectDataSettings (Settings tab's Data section),
+                                       ImportJsonDialog, ImportCsvTasksDialog
   pages/                     Route-level components (ProjectsPage, ProjectDetailPage, AllTasksPage,
                               BoardPage(+Picker), GanttPage(+Picker), CalendarPage, TimelinePage,
                               WorkloadPage, TimesheetsPage — Phase 4,
@@ -702,6 +819,8 @@ src/
                               RisksPage, AiSettingsPage, AskPage — Phase 5)
                               -- Phase 6 has no new pages: the notification bell and Cmd/Ctrl+K search
                                  are global overlays mounted in AppShell, not routes.
+                              -- Phase 7 has no new pages either: templates and import/export are new
+                                 dialogs/sections on ProjectsPage and ProjectDetailPage, not new routes.
 ```
 
 ## Known trade-offs (intentional, revisit if a later phase needs otherwise)
@@ -781,3 +900,29 @@ src/
   one most pages already manage for their own in-page task rows — in the
   narrow case where both are triggered at once, two sheets can theoretically
   be open simultaneously. See AGENTS.md's Global search section.
+- Project templates (Phase 7) capture task statuses, project-scoped custom
+  fields, and tasks only — task dependencies, subtasks, milestones, and
+  recurrence rules aren't part of a template snapshot, so a materialized
+  project never has any of those even if the source project did. Revisit
+  only if a real workflow needs one of these to travel with a template.
+- JSON export/import (Phase 7) deliberately excludes attachments (binary
+  blobs), comments/the field-change audit log, automation rules/run log,
+  and time/budget data — it targets exactly what the brief's acceptance
+  criteria named (tasks, custom fields, dependencies) plus the structural
+  data needed to make those meaningful, not a full-fidelity database dump.
+  A single-project export also drops any dependency edge whose other end
+  points outside that project (cross-project dependencies survive an
+  "export everything" round-trip, just not a single-project one). See
+  AGENTS.md for the complete scope list.
+- CSV task import/export (Phase 7) round-trips through the same "blank
+  assignee displays as the literal text 'Unassigned'" convention the CSV
+  exporter already used before this phase — re-importing an export with an
+  unassigned task sets that task's `assignee` to the string `"Unassigned"`,
+  not an empty string. See AGENTS.md's CSV sharp edge for why this isn't
+  special-cased away.
+- The RBAC scaffolding (Phase 7) is exactly that — scaffolding. There is no
+  login, no session, no server, and `useCurrentRole()` always returns
+  `"owner"`. A deliberately small set of real call sites (project/task
+  delete, template save/apply, import) already call `hasPermission()`, but
+  every check passes today by construction. Treat this as the seam a real
+  auth phase would replace, not as working access control.

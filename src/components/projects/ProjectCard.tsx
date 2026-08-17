@@ -13,11 +13,14 @@ import { ConfirmDeleteDialog } from "@/components/ui/ConfirmDeleteDialog";
 import { HealthBadge } from "@/components/projects/HealthBadge";
 import { ProjectFormDialog } from "@/components/projects/ProjectFormDialog";
 import { deleteProject } from "@/lib/queries/projects";
+import { useCurrentRole } from "@/hooks/use-role";
+import { hasPermission } from "@/lib/permissions";
 import type { Project } from "@/lib/db";
 import { toast } from "sonner";
 
 export function ProjectCard({ project, taskCount }: { project: Project; taskCount: number }) {
   const navigate = useNavigate();
+  const role = useCurrentRole();
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
@@ -45,7 +48,11 @@ export function ProjectCard({ project, taskCount }: { project: Project; taskCoun
                 <DropdownMenuItem onClick={() => setEditOpen(true)}>
                   <PencilSimple /> Edit
                 </DropdownMenuItem>
-                <DropdownMenuItem variant="destructive" onClick={() => setDeleteOpen(true)}>
+                <DropdownMenuItem
+                  variant="destructive"
+                  disabled={!hasPermission(role, "project:delete")}
+                  onClick={() => setDeleteOpen(true)}
+                >
                   <Trash /> Delete
                 </DropdownMenuItem>
               </DropdownMenuContent>

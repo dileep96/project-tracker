@@ -1,14 +1,37 @@
 import { useState } from "react";
-import { FolderOpen, Plus } from "@phosphor-icons/react";
+import { toast } from "sonner";
+import { FileArrowDown, FileArrowUp, FolderOpen, Plus, Stack } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { ProjectCard } from "@/components/projects/ProjectCard";
 import { ProjectFormDialog } from "@/components/projects/ProjectFormDialog";
+import { CreateProjectFromTemplateDialog } from "@/components/templates/CreateProjectFromTemplateDialog";
+import { ImportJsonDialog } from "@/components/data/ImportJsonDialog";
 import { useProjects, useProjectTaskCounts } from "@/hooks/use-projects";
+import { useTemplates } from "@/hooks/use-templates";
+import { useCurrentRole } from "@/hooks/use-role";
+import { hasPermission } from "@/lib/permissions";
+import { buildFullExportBundle, downloadExportBundle } from "@/lib/io/export";
 
 export function ProjectsPage() {
   const projects = useProjects();
   const taskCounts = useProjectTaskCounts();
+  const templates = useTemplates();
+  const role = useCurrentRole();
   const [createOpen, setCreateOpen] = useState(false);
+  const [fromTemplateOpen, setFromTemplateOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+
+  async function handleExportAll() {
+    try {
+      const bundle = await buildFullExportBundle();
+      const stamp = new Date().toISOString().slice(0, 10);
+      downloadExportBundle(bundle, `project-tracker-export-${stamp}.json`);
+      toast.success(`Exported ${bundle.projects.length} project${bundle.projects.length === 1 ? "" : "s"}`);
+    } catch (error) {
+      console.error("Export all failed", error);
+      toast.error("Export failed");
+    }
+  }
 
   const loading = projects === undefined;
 
@@ -21,9 +44,28 @@ export function ProjectsPage() {
             Everything you're tracking, in one place.
           </p>
         </div>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus /> New project
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {templates !== undefined && templates.length > 0 && (
+            <Button variant="outline" onClick={() => setFromTemplateOpen(true)}>
+              <Stack /> From template
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            disabled={!hasPermission(role, "data:import")}
+            onClick={() => setImportOpen(true)}
+          >
+            <FileArrowUp /> Import
+          </Button>
+          {projects !== undefined && projects.length > 0 && (
+            <Button variant="outline" onClick={handleExportAll}>
+              <FileArrowDown /> Export all
+            </Button>
+          )}
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus /> New project
+          </Button>
+        </div>
       </div>
 
       {loading ? (
@@ -54,6 +96,8 @@ export function ProjectsPage() {
       )}
 
       <ProjectFormDialog open={createOpen} onOpenChange={setCreateOpen} />
+      <CreateProjectFromTemplateDialog open={fromTemplateOpen} onOpenChange={setFromTemplateOpen} />
+      <ImportJsonDialog open={importOpen} onOpenChange={setImportOpen} />
     </div>
   );
 }

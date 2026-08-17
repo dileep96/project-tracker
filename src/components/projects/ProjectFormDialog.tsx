@@ -24,6 +24,18 @@ interface ProjectFormDialogProps {
   project?: Project;
 }
 
+function toInputValue(epochMs: number | null): string {
+  if (epochMs === null) return "";
+  const d = new Date(epochMs);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function fromInputValue(value: string): number | null {
+  if (!value) return null;
+  const [y, m, d] = value.split("-").map(Number);
+  return new Date(y, m - 1, d).getTime();
+}
+
 const HEALTH_OPTIONS: { value: ProjectHealth; label: string }[] = [
   { value: "green", label: "Green — On track" },
   { value: "amber", label: "Amber — At risk" },
@@ -41,6 +53,7 @@ export function ProjectFormDialog({ open, onOpenChange, project }: ProjectFormDi
   const [status, setStatus] = useState<string>("Planning");
   const [health, setHealth] = useState<ProjectHealth>("green");
   const [budgetEstimate, setBudgetEstimate] = useState("");
+  const [startDate, setStartDate] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -51,6 +64,7 @@ export function ProjectFormDialog({ open, onOpenChange, project }: ProjectFormDi
     setStatus(project?.status ?? "Planning");
     setHealth(project?.health ?? "green");
     setBudgetEstimate(project?.budgetEstimate === null || project?.budgetEstimate === undefined ? "" : String(project.budgetEstimate));
+    setStartDate(toInputValue(project?.startDate ?? null));
   }, [open, project]);
 
   const statusSuggestions = Array.from(
@@ -63,6 +77,7 @@ export function ProjectFormDialog({ open, onOpenChange, project }: ProjectFormDi
     setSubmitting(true);
     try {
       const budgetEstimateValue = budgetEstimate.trim() === "" ? null : Math.max(0, Number(budgetEstimate) || 0);
+      const startDateValue = fromInputValue(startDate);
       if (isEditing) {
         await updateProject(project.id, {
           name: name.trim(),
@@ -71,6 +86,7 @@ export function ProjectFormDialog({ open, onOpenChange, project }: ProjectFormDi
           status: status.trim() || "Planning",
           health,
           budgetEstimate: budgetEstimateValue,
+          startDate: startDateValue,
         });
         toast.success("Project updated");
       } else {
@@ -81,6 +97,7 @@ export function ProjectFormDialog({ open, onOpenChange, project }: ProjectFormDi
           status: status.trim() || "Planning",
           health,
           budgetEstimate: budgetEstimateValue,
+          startDate: startDateValue,
         });
         toast.success("Project created");
       }
@@ -181,6 +198,21 @@ export function ProjectFormDialog({ open, onOpenChange, project }: ProjectFormDi
                   placeholder="Optional"
                 />
               </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="project-start-date">Start date</Label>
+              <input
+                id="project-start-date"
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="h-9 rounded-md border border-input bg-transparent px-3 font-mono text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
+              />
+              <p className="text-xs text-muted-foreground">
+                Optional — the anchor a template's relative task dates are computed from when this project is
+                saved as (or created from) a template.
+              </p>
             </div>
           </div>
 
