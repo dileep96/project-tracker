@@ -2,12 +2,15 @@ import {
   CalendarBlank,
   ChartBarHorizontal,
   ChartPieSlice,
+  ChatCircleText,
   ClockCountdown,
   FolderOpen,
   Kanban,
   ListChecks,
+  Robot,
   Timer,
   UsersThree,
+  Warning,
   type Icon,
 } from "@phosphor-icons/react";
 
@@ -30,5 +33,8 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Timeline", to: "/timeline", icon: ClockCountdown },
   { label: "Workload", to: "/workload", icon: UsersThree },
   { label: "Timesheets", to: "/timesheets", icon: Timer },
+  { label: "Risks", to: "/risks", icon: Warning },
   { label: "Dashboard", to: "/dashboard", icon: ChartPieSlice },
+  { label: "Ask", to: "/ask", icon: ChatCircleText },
+  { label: "AI Settings", to: "/settings/ai", icon: Robot },
 ];

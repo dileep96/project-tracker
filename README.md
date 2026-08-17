@@ -8,19 +8,23 @@ Build plan and phase status are tracked in the parent firstmate home's
 backlog (not in this repo).
 
 This repo currently implements **Phase 1 (foundation)**, **Phase 2
-(views)**, **Phase 3 (analytics)**, and **Phase 4 (resource/time/budget
-tracking)**: app shell, data layer, project/task CRUD, the List/Table view,
-Kanban board, Gantt chart with critical-path analysis, Calendar, the
-portfolio Timeline, recurring-task instance generation, the executive
-dashboard (KPIs, burndown/burnup, portfolio rollup, resource heatmap, trend
-charts, a click-to-filter drill-down, and a report builder with
-CSV/PDF/Excel export), a workload/capacity view, a built-in timer plus
-manual time entry with timesheets, and estimated-vs-actual budget tracking
-per project/task. The dashboard's "Budget burn rate" KPI now computes a
-real value from that budget data (see Phase 4 section below) — the honest
-"not enough data yet" state Phase 3 shipped it with only shows again if no
-project has a budget estimate set yet. Automation, collaboration, and
-templates/import-export/RBAC are later phases.
+(views)**, **Phase 3 (analytics)**, **Phase 4 (resource/time/budget
+tracking)**, and **Phase 5 (automation, risk register, AI)**: app shell,
+data layer, project/task CRUD, the List/Table view, Kanban board, Gantt
+chart with critical-path analysis, Calendar, the portfolio Timeline,
+recurring-task instance generation, the executive dashboard (KPIs,
+burndown/burnup, portfolio rollup, resource heatmap, trend charts, a
+click-to-filter drill-down, and a report builder with CSV/PDF/Excel
+export), a workload/capacity view, a built-in timer plus manual time entry
+with timesheets, estimated-vs-actual budget tracking per project/task,
+project-scoped automation rules with a run log, a cross-project risk
+register, and AI features (a pluggable LM Studio/OpenAI/Azure OpenAI
+client, per-project AI-generated status summaries, and a natural-language
+task query page) behind a settings page at `/settings/ai`. The dashboard's
+"Budget burn rate" KPI now computes a real value from that budget data (see
+Phase 4 section below) — the honest "not enough data yet" state Phase 3
+shipped it with only shows again if no project has a budget estimate set
+yet. Collaboration and templates/import-export/RBAC are later phases.
 
 ## Running locally
 
@@ -58,6 +62,10 @@ the schema.
   version carries two unpatched advisories (prototype pollution, ReDoS);
   `write-excel-file` is a small write-only library with zero advisories —
   see AGENTS.md.
+- AI features (Phase 5) add **zero new dependencies** — `src/lib/ai/
+  client.ts` talks to LM Studio/OpenAI/Azure OpenAI with plain `fetch`
+  against their REST APIs directly, no provider SDK. No client-side LLM
+  runtime either — every provider is a real HTTP endpoint.
 
 ## Design system
 
@@ -365,7 +373,120 @@ Deleting a template task (one with a rule) cascades to every instance it
 generated, so instances can't outlive a deleted `recurrenceParentId` — see
 `deleteTask` in `src/lib/queries/tasks.ts`.
 
-## Dexie schema (version 4)
+## Automation — Phase 5
+
+Project settings' **Automations** section (a new subsection alongside Task
+statuses/Custom fields, not a separate page) lists, creates, and edits
+project-scoped rules: a **trigger**, an optional **condition**, and one or
+more **actions**.
+
+- **Triggers**: task status changes to a specific status, a task becomes
+  overdue, or a task is created.
+- **Condition** (optional, at most one): priority equals / has tag / assignee
+  equals a value — a single extra guard, not a general condition builder.
+- **Actions**: change status, change priority, add a tag, set assignee, set
+  a custom field's value, or **notify** — a log-only action for when a rule's
+  real intent is alerting someone. This app has no notification center yet
+  (that's Phase 6), so `notify` writes one row to a lightweight
+  **automation run log** (rule name, task affected, what happened, when)
+  and shows a toast the moment it fires, instead of any real delivery.
+  Every action a single rule firing applies is folded into that one log row
+  and one toast, not one per action.
+
+Rule mutations always go through real Dexie writes directly
+(`db.tasks.update`), not through the same `updateTask()` that triggers
+`statusChanged` automations — so an automation's own action never
+re-triggers another rule evaluation. This is what keeps a misconfigured
+pair of rules (A sets status to what triggers B, B sets it back to what
+triggers A) from cascading forever; see AGENTS.md for the exact mechanism
+and how it was stress-tested.
+
+"Task becomes overdue" has no natural moment to fire at (nothing writes to
+a task the instant its due date passes) — a sweep runs on app startup,
+every 60 seconds while the app stays open, and immediately after saving a
+rule with this trigger, deduping against the run log so an overdue task
+that's stayed overdue for days doesn't refire the same rule repeatedly. See
+`src/lib/queries/automations.ts` and AGENTS.md for the full mechanism —
+this is the log/event shape Phase 6's notification center is expected to
+read from.
+
+## Risk register — `/risks` (Phase 5)
+
+One cross-project view surfacing every real at-risk item, sorted by
+severity, with a click-through straight to the affected task (opens
+`TaskDetailSheet`) or project. Three sources, computed live (no separate
+risk table — same "recompute from real data on every render" philosophy as
+the Phase 3 dashboard):
+
+- **Overdue task dependencies** — an incomplete, overdue task still blocking
+  another incomplete task, reusing the same dependency-edge normalization
+  the Gantt critical-path pass builds on.
+- **Budget overruns** — a project whose actual cost (Phase 4) has passed, or
+  is closing in on, its budget estimate.
+- **Milestones** — approaching or missed target dates, combining
+  user-set `"at-risk"`/`"missed"` status with two automatic derivations (a
+  still-`"upcoming"` milestone whose date has already passed reads as an
+  undetected miss; one inside a 7-day window is a heads-up before it's too
+  late).
+
+Each risk carries a severity (`high`/`medium`/`low`) and a project/task
+link; filters for severity, risk type, and project narrow the list. See
+`src/lib/analytics/risks.ts` and AGENTS.md for the exact severity rules and
+why low severity deliberately isn't rendered in the "everything's fine"
+green this app uses everywhere else.
+
+## AI provider, summaries, and natural-language querying — Phase 5
+
+A settings page at `/settings/ai` configures **one of three OpenAI-
+compatible-ish providers** through a single pluggable client
+(`src/lib/ai/client.ts`) — the summary feature and the `/ask` query feature
+both call the exact same `chatCompletion()` rather than duplicating
+per-provider request logic:
+
+- **LM Studio** (local, the default) — base URL defaults to
+  `http://localhost:1234/v1`, no API key, and a "Fetch available models"
+  button lists whatever's actually loaded (`GET {baseUrl}/models`) instead
+  of hardcoding a name.
+- **OpenAI** — the standard `https://api.openai.com/v1`,
+  `Authorization: Bearer <key>` header, user-supplied key + model name.
+- **Azure OpenAI** — a genuinely different request shape, not just a
+  different base URL: endpoint + deployment name + API version go into the
+  URL itself (`{endpoint}/openai/deployments/{deployment}/chat/completions
+  ?api-version=...`), auth is an `api-key` header (not a bearer token), and
+  the request body has no `model` field at all — the deployment picks it.
+
+Config persists to a new `aiProviderConfig` Dexie table (plain-text API
+key — this is a local-only single-user tool, not a hosted app, so no
+encryption scheme), never to `localStorage`, and is never written to the
+console anywhere in this codebase. **Test connection** makes one real
+request and reports success or failure with the actual response/error, so
+a bad config is never discovered later by a summary silently failing.
+Every AI-dependent surface (the project Summary tab, `/ask`) shows a
+calm "set up an AI provider first" empty state with a link to
+`/settings/ai` when nothing's configured — never a silent no-op.
+
+**Project summaries** — a **Summary** tab on the project detail page
+(alongside Tasks/Milestones/Budget/Settings) sends that project's task
+list, status breakdown, overdue items, and recent activity (last 14 days)
+to the configured provider and shows the resulting status write-up. A
+collapsed **"What was sent"** detail shows the exact prompt and data —
+this is a local tool the person running it can and should be able to
+inspect, not a black box.
+
+**Natural-language querying** — `/ask` turns a plain-language question
+("what's overdue this week?") into a real `ReportFilters` object (the same
+type/shape the Phase 3 report builder already uses) and runs it through the
+existing `applyReportFilters`, rendering the result through the same
+`TaskTable` every other view uses. The model's only job is proposing a
+filter; every field it returns is validated against the real, live set of
+known projects/statuses/priorities before being trusted, so a hallucinated
+status name (or any other bad value) is dropped to "no constraint" rather
+than silently producing an empty or wrong result. See
+`src/lib/ai/{client,summary,nl-query}.ts` and AGENTS.md for the full
+request shapes, the validation approach, and a real prompt-engineering
+lesson learned by testing against a small local model.
+
+## Dexie schema (version 5)
 
 All tables live in `src/lib/db.ts`. Every future phase should add a new
 `db.version(N).stores({...})` call (with an `.upgrade()` migration if data
@@ -378,12 +499,14 @@ brand-new table, so no `.upgrade()` was needed. Version 4 (Phase 4) adds
 four brand-new tables (`people`, `personTimeOff`, `timeEntries`,
 `activeTimers`) plus two plain (non-indexed) fields on existing tables —
 `Task.estimatedHours` and `Project.budgetEstimate` — both backfilled to
-`null` for pre-existing rows via `.upgrade()`. Note for future phases: a
-Dexie upgrade transaction has access to every table in the database, not
-just the ones a given version's `.stores()` call lists — v4's `.upgrade()`
-modifies `tasks`/`projects` rows even though their index strings are
-unchanged from earlier versions; only the tables whose *indexes* change
-need to appear in that version's `.stores()` object.
+`null` for pre-existing rows via `.upgrade()`. Version 5 (Phase 5) adds
+three more brand-new tables (`automationRules`, `automationRunLog`,
+`aiProviderConfig`) — again no `.upgrade()` needed, same as v3. Note for
+future phases: a Dexie upgrade transaction has access to every table in the
+database, not just the ones a given version's `.stores()` call lists — v4's
+`.upgrade()` modifies `tasks`/`projects` rows even though their index
+strings are unchanged from earlier versions; only the tables whose
+*indexes* change need to appear in that version's `.stores()` object.
 
 | Table | Notes |
 |---|---|
@@ -402,22 +525,31 @@ need to appear in that version's `.stores()` object.
 | `personTimeOff` (v4) | PTO/time-off ranges per person (`startDate`/`endDate` inclusive, a free-text `label`). Reduces that person's capacity on the Workload grid for the days it covers. |
 | `timeEntries` (v4) | One logged block of time (`taskId`, `personId`, `date`, `minutes`, `billable`, `source: "timer" \| "manual"`). `projectId` is denormalized from the task at entry time — safe since tasks never change project after creation. |
 | `activeTimers` (v4) | At most one row, always `id: "current"` — the single global running timer. `startedAt` is the only persisted state; elapsed time is always recomputed from it, never stored as a counter. |
+| `automationRules` (v5) | Project-scoped rule = `trigger` + optional `condition` + `actions[]` — see "Automation" above. |
+| `automationRunLog` (v5) | One row per rule *firing* (`ruleId`, `ruleName`, `projectId`, `taskId`, `taskTitle`, `trigger`, `summary`, `firedAt`), `[ruleId+taskId]` compound index for the overdue-sweep's dedupe check. `ruleName`/`taskTitle` are denormalized so a row stays readable after the rule or task it refers to is deleted. |
+| `aiProviderConfig` (v5) | Single row, `id: "current"` (same pattern as `activeTimers`). All three providers' fields nested under their own key plus which one is active — see "AI provider..." above. |
 
 Cascading deletes are hand-rolled (IndexedDB has no `ON DELETE CASCADE`) —
 see `deleteProject` and `deleteTask` in `src/lib/queries/`. Deleting a
 project walks every task through `deleteTask` (which itself cleans up that
 task's subtasks/attachments/customFieldValues/dependencies/recurrence, and
 now `timeEntries`/a matching `activeTimer` too) and then clears the
-project's own statuses/fields/milestones, all inside Dexie transactions. If
-you add a table with a foreign key into `projects` or `tasks`, wire its
-cleanup into the matching delete function. `deletePerson`
-(`src/lib/queries/people.ts`) is the one exception to "cascade everything":
-it deletes the person's own `personTimeOff` rows and clears a matching
-`activeTimer`, but deliberately leaves their `timeEntries` in place — a
-logged hour stays a real historical fact even after the person record is
-removed (the UI resolves a missing `personId` to "Deleted person" rather
-than crashing), the same reasoning `deleteMilestone` already uses for tasks
-that referenced a deleted milestone.
+project's own statuses/fields/milestones/`automationRules`/
+`automationRunLog`, all inside Dexie transactions. If you add a table with
+a foreign key into `projects` or `tasks`, wire its cleanup into the
+matching delete function. `deletePerson` (`src/lib/queries/people.ts`) and
+`deleteTask` (for `automationRunLog` specifically) are the exceptions to
+"cascade everything": `deletePerson` deletes the person's own
+`personTimeOff` rows and clears a matching `activeTimer`, but deliberately
+leaves their `timeEntries` in place — a logged hour stays a real historical
+fact even after the person record is removed (the UI resolves a missing
+`personId` to "Deleted person" rather than crashing), the same reasoning
+`deleteMilestone` already uses for tasks that referenced a deleted
+milestone. `deleteTask` leaves `automationRunLog` rows referencing that
+task alone for the identical reason (a past automation firing is a
+historical fact); `deleteProject` still clears both `automationRules` and
+`automationRunLog` for the whole project, since there's no project-scoped
+view left to ever read an orphaned log row again — see AGENTS.md.
 
 ## Project structure
 
@@ -440,15 +572,24 @@ src/
       report.ts                   Report-builder filter predicate + CSV/PDF/Excel export
       capacity.ts                 Phase 4: person x week allocated-vs-capacity workload grid
       budget.ts                   Phase 4: actual/estimated cost per task/project
+      risks.ts                    Phase 5: overdue-dependency/budget/milestone risk register
+    ai/                       Phase 5: pluggable AI client + feature logic, no React
+      client.ts                  chatCompletion/listLmStudioModels/testAiProviderConnection — 3 provider shapes
+      summary.ts                  Project-summary context builder + prompt
+      nl-query.ts                  NL question -> ReportFilters, with defensive coercion
     chart-theme.ts           Shared Recharts colors/styles (CSS-var-backed, theme-reactive)
     format.ts                Phase 4: shared hours/currency/duration formatting
     queries/                CRUD + cascade-delete functions, one file per entity
       report-views.ts          Saved report-view CRUD (Phase 3)
       people.ts                 Phase 4: people + PTO CRUD
       time-entries.ts            Phase 4: manual time entries + the global timer's start/stop
+      automations.ts              Phase 5: rule CRUD + trigger/condition/action engine + run log
+      ai-config.ts                 Phase 5: AI provider config CRUD
   hooks/                    useLiveQuery wrappers (reactive reads) + theme context
     use-people.ts              Phase 4
     use-time-entries.ts         Phase 4 (includes useActiveTimer)
+    use-automations.ts           Phase 5
+    use-ai-config.ts              Phase 5
   components/
     ui/                      shadcn-generated primitives (owned, customized — see index.css)
     layout/                   App shell: sidebar, mobile drawer, nav registry, theme toggle
@@ -467,10 +608,13 @@ src/
     timer/                     Phase 4: RunningTimerBar (global), TimerStartControl (per-task)
     timesheets/                Phase 4: ManualTimeEntryDialog
     budget/                    Phase 4: ProjectBudgetPanel (the project detail page's Budget tab)
+    automations/                Phase 5: AutomationRulesManager, AutomationRuleForm, AutomationRunLogList
+    ai/                         Phase 5: ProjectSummaryPanel (+ shared AiNotConfiguredNotice)
   pages/                     Route-level components (ProjectsPage, ProjectDetailPage, AllTasksPage,
                               BoardPage(+Picker), GanttPage(+Picker), CalendarPage, TimelinePage,
                               WorkloadPage, TimesheetsPage — Phase 4,
-                              DashboardPage — lazy-loaded, see App.tsx)
+                              DashboardPage — lazy-loaded, see App.tsx,
+                              RisksPage, AiSettingsPage, AskPage — Phase 5)
 ```
 
 ## Known trade-offs (intentional, revisit if a later phase needs otherwise)
@@ -512,3 +656,20 @@ src/
   4 brief explicitly allowed skipping this ("plus any direct cost entries
   you choose to support"); add one only if a future phase's budget picture
   genuinely needs non-labor costs.
+- Automation rules (Phase 5) support at most one condition (one field, one
+  value), not an AND/OR condition builder — kept to what a rule's own UI
+  can present as a single row rather than a mini query language. Revisit
+  only if a real rule genuinely needs to combine more than one guard.
+- The "task became overdue" trigger's dedupe (Phase 5) is a one-way ledger
+  keyed off `automationRunLog` — once a rule has fired for a task via this
+  trigger, it never fires again for that same task, even if the task is
+  completed and later reopened past its due date again. This is
+  deliberately simple rather than a resettable "became overdue" event;
+  revisit only if a future use case needs that finer-grained re-triggering.
+- `/ask`'s natural-language query only maps to the fields `ReportFilters`
+  already has (project/status/priority/assignee/date-range/completed) — no
+  tag filter, no boolean AND/OR combos beyond what a single filter object
+  expresses. This mirrors the report builder's own scope; extend
+  `ReportFilters` first (see AGENTS.md) if a future question needs a field
+  it doesn't have yet, rather than asking the model to interpret something
+  the filter layer can't express.

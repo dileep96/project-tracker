@@ -10,6 +10,7 @@ import {
 } from "@/lib/db";
 import { generateId, now } from "@/lib/ids";
 import { normalizeDependencyEdges, wouldCreateCycle } from "@/lib/dependency-graph";
+import { runStatusChangedAutomations, runTaskCreatedAutomations } from "@/lib/queries/automations";
 
 export interface CreateTaskInput {
   projectId: string;
@@ -49,11 +50,21 @@ export async function createTask(input: CreateTaskInput): Promise<Task> {
     completedAt: null,
   };
   await db.tasks.add(row);
+  // Fire-and-forget: runTaskCreatedAutomations never throws (see automations.ts) and task
+  // creation shouldn't wait on rule evaluation to resolve.
+  void runTaskCreatedAutomations(row);
   return row;
 }
 
 export async function updateTask(id: string, patch: Partial<Omit<Task, "id" | "createdAt">>): Promise<void> {
+  // Only fetched when the patch actually touches statusId — every other call site (the vast
+  // majority: title/description/dates/tags/assignee edits) skips this extra read entirely.
+  const before = patch.statusId !== undefined ? await db.tasks.get(id) : undefined;
   await db.tasks.update(id, { ...patch, updatedAt: now() });
+  if (before && patch.statusId !== undefined && patch.statusId !== before.statusId) {
+    const after = await db.tasks.get(id);
+    if (after) void runStatusChangedAutomations(after, before.statusId);
+  }
 }
 
 /** Marks a task done/not-done, keeping completedAt in sync for future analytics (cycle time, burndown). */

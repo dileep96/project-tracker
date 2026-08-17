@@ -24,6 +24,8 @@ import { MilestoneManager } from "@/components/milestones/MilestoneManager";
 import { StatusManager } from "@/components/tasks/StatusManager";
 import { CustomFieldDefsManager } from "@/components/tasks/CustomFieldDefsManager";
 import { ProjectBudgetPanel } from "@/components/budget/ProjectBudgetPanel";
+import { AutomationRulesManager } from "@/components/automations/AutomationRulesManager";
+import { ProjectSummaryPanel } from "@/components/ai/ProjectSummaryPanel";
 import { useProject } from "@/hooks/use-projects";
 import { useProjectTasks } from "@/hooks/use-tasks";
 import { useTaskStatuses } from "@/hooks/use-task-statuses";
@@ -113,10 +115,14 @@ export function ProjectDetailPage() {
       </div>
 
       <Tabs defaultValue="tasks">
-        <TabsList>
+        {/* overflow-x-auto: 5 triggers is the same width pressure that hit TaskDetailSheet's tab
+            bar at mobile widths once it grew past 6 (see AGENTS.md) — scroll horizontally within
+            the bar itself rather than letting it push past the page's own edge. */}
+        <TabsList className="w-full justify-start overflow-x-auto">
           <TabsTrigger value="tasks">Tasks</TabsTrigger>
           <TabsTrigger value="milestones">Milestones</TabsTrigger>
           <TabsTrigger value="budget">Budget</TabsTrigger>
+          <TabsTrigger value="summary">Summary</TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
         </TabsList>
 
@@ -142,6 +148,10 @@ export function ProjectDetailPage() {
           <ProjectBudgetPanel project={project} tasks={tasks} />
         </TabsContent>
 
+        <TabsContent value="summary" className="pt-4">
+          {statuses ? <ProjectSummaryPanel project={project} tasks={tasks} statuses={statuses} /> : null}
+        </TabsContent>
+
         <TabsContent value="settings" className="flex flex-col gap-8 pt-4">
           <section>
             <h2 className="mb-3 text-sm font-semibold">Task statuses</h2>
@@ -150,6 +160,10 @@ export function ProjectDetailPage() {
           <section>
             <h2 className="mb-3 text-sm font-semibold">Custom fields</h2>
             <CustomFieldDefsManager projectId={project.id} />
+          </section>
+          <section>
+            <h2 className="mb-3 text-sm font-semibold">Automations</h2>
+            <AutomationRulesManager projectId={project.id} />
           </section>
         </TabsContent>
       </Tabs>

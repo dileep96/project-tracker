@@ -175,7 +175,7 @@ export function ProjectFormDialog({ open, onOpenChange, project }: ProjectFormDi
                   id="project-budget"
                   type="number"
                   min={0}
-                  step={100}
+                  step={1}
                   value={budgetEstimate}
                   onChange={(e) => setBudgetEstimate(e.target.value)}
                   placeholder="Optional"

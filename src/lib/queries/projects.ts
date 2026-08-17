@@ -41,11 +41,13 @@ export async function updateProject(id: string, patch: Partial<Omit<Project, "id
 
 /** Deletes a project and every record that belongs to it, including each task's own dependents. */
 export async function deleteProject(id: string): Promise<void> {
-  const [taskIds, statusIds, fieldDefIds, milestoneIds] = await Promise.all([
+  const [taskIds, statusIds, fieldDefIds, milestoneIds, ruleIds, runLogIds] = await Promise.all([
     db.tasks.where("projectId").equals(id).primaryKeys(),
     db.taskStatuses.where("projectId").equals(id).primaryKeys(),
     db.customFieldDefs.where("projectId").equals(id).primaryKeys(),
     db.milestones.where("projectId").equals(id).primaryKeys(),
+    db.automationRules.where("projectId").equals(id).primaryKeys(),
+    db.automationRunLog.where("projectId").equals(id).primaryKeys(),
   ]);
 
   // Task deletion cascades subtasks/attachments/customFieldValues/dependencies/recurrence per task.
@@ -55,12 +57,18 @@ export async function deleteProject(id: string): Promise<void> {
 
   await db.transaction(
     "rw",
-    [db.projects, db.taskStatuses, db.customFieldDefs, db.customFieldValues, db.milestones],
+    [db.projects, db.taskStatuses, db.customFieldDefs, db.customFieldValues, db.milestones, db.automationRules, db.automationRunLog],
     async () => {
       await db.taskStatuses.bulkDelete(statusIds);
       await db.customFieldValues.where("fieldId").anyOf(fieldDefIds as string[]).delete();
       await db.customFieldDefs.bulkDelete(fieldDefIds);
       await db.milestones.bulkDelete(milestoneIds);
+      // Phase 5: rules and their run log are cleared with the project — unlike deleteTask (which
+      // deliberately leaves automationRunLog alone, see AGENTS.md), there's no per-project view left
+      // to ever read these once the project itself is gone, so keeping them would just be permanent,
+      // invisible IndexedDB bloat rather than a useful historical record.
+      await db.automationRules.bulkDelete(ruleIds);
+      await db.automationRunLog.bulkDelete(runLogIds);
       await db.projects.delete(id);
     }
   );

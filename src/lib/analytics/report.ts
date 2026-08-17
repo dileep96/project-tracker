@@ -7,6 +7,11 @@ export function applyReportFilters(tasks: Task[], filters: ReportFilters, status
     if (filters.statusName && statusName(t) !== filters.statusName) return false;
     if (filters.priority && t.priority !== filters.priority) return false;
     if (filters.assignee && !t.assignee.toLowerCase().includes(filters.assignee.toLowerCase())) return false;
+    // Added in Phase 5 for the /ask natural-language query feature (see AGENTS.md) — the report
+    // builder's own UI never sets this, so `undefined` (every pre-existing SavedReportView) and
+    // `null` both mean "no constraint" here, identically.
+    if (filters.completed === true && t.completedAt === null) return false;
+    if (filters.completed === false && t.completedAt !== null) return false;
     const dateValue = t[filters.dateField];
     if (filters.dateFrom !== null && (dateValue === null || dateValue < filters.dateFrom)) return false;
     if (filters.dateTo !== null && (dateValue === null || dateValue > filters.dateTo)) return false;
@@ -22,6 +27,7 @@ export const EMPTY_REPORT_FILTERS: ReportFilters = {
   dateField: "dueDate",
   dateFrom: null,
   dateTo: null,
+  completed: null,
 };
 
 export interface ExportRow {

@@ -12,7 +12,14 @@ import { CalendarPage } from "@/pages/CalendarPage";
 import { TimelinePage } from "@/pages/TimelinePage";
 import { WorkloadPage } from "@/pages/WorkloadPage";
 import { TimesheetsPage } from "@/pages/TimesheetsPage";
+import { RisksPage } from "@/pages/RisksPage";
+import { AiSettingsPage } from "@/pages/AiSettingsPage";
+import { AskPage } from "@/pages/AskPage";
 import { generateRecurringInstances } from "@/lib/recurrence";
+import { runOverdueAutomationSweep } from "@/lib/queries/automations";
+
+/** How often the "task became overdue" trigger re-scans while the app stays open — see AGENTS.md. Kept short since the sweep is cheap (a couple of Dexie table scans) at this app's personal-project scale. */
+const OVERDUE_AUTOMATION_SWEEP_INTERVAL_MS = 60_000;
 
 // Lazy-loaded: Recharts (plus its d3 dependencies) is the single heaviest import in the app —
 // code-splitting it here keeps every other route's bundle the size it was before Phase 3 instead
@@ -34,6 +41,16 @@ export default function App() {
     generateRecurringInstances().catch((error) => console.error("Recurring task generation failed", error));
   }, []);
 
+  // "Task became overdue" automations have no natural write-time hook (nothing writes to a task
+  // the moment its due date passes) — the same trade-off recurring-task generation makes, run on
+  // an interval instead. runOverdueAutomationSweep() never throws (see automations.ts) and
+  // self-dedupes against the run log, so re-running it constantly is safe and cheap.
+  useEffect(() => {
+    runOverdueAutomationSweep();
+    const id = window.setInterval(runOverdueAutomationSweep, OVERDUE_AUTOMATION_SWEEP_INTERVAL_MS);
+    return () => window.clearInterval(id);
+  }, []);
+
   return (
     <Routes>
       <Route element={<AppShell />}>
@@ -50,6 +67,9 @@ export default function App() {
         <Route path="/timeline" element={<TimelinePage />} />
         <Route path="/workload" element={<WorkloadPage />} />
         <Route path="/timesheets" element={<TimesheetsPage />} />
+        <Route path="/risks" element={<RisksPage />} />
+        <Route path="/ask" element={<AskPage />} />
+        <Route path="/settings/ai" element={<AiSettingsPage />} />
         <Route
           path="/dashboard"
           element={

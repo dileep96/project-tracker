@@ -178,6 +178,14 @@ export interface ReportFilters {
   dateField: "dueDate" | "startDate" | "createdAt" | "completedAt";
   dateFrom: number | null;
   dateTo: number | null;
+  /**
+   * Added in Phase 5 for the `/ask` natural-language query feature — the report builder itself
+   * never sets this (its UI has no control for it), so every pre-existing `SavedReportView` row
+   * simply has this field `undefined`, which `applyReportFilters` treats identically to `null`
+   * ("no constraint"). No Dexie migration needed: `ReportFilters` lives inside a JSON blob field on
+   * `savedReportViews`, not as its own indexed column — see AGENTS.md.
+   */
+  completed?: boolean | null;
 }
 
 /** A saved report-builder filter set (Phase 3). Re-running it re-queries live tasks — it stores the filter, not a result snapshot. */
@@ -263,6 +271,103 @@ export interface ActiveTimer {
   startedAt: number;
 }
 
+// ---------------------------------------------------------------------------
+// Automation (Phase 5) — trigger + optional condition + action(s), project-scoped.
+// ---------------------------------------------------------------------------
+
+export type AutomationTriggerType = "statusChanged" | "taskOverdue" | "taskCreated";
+
+/**
+ * `statusId` is only meaningful (and required by the rule form) when `type === "statusChanged"` —
+ * the specific status within the rule's own project the task must move *to* for the rule to fire.
+ * Referencing the status by id (not name) matches how `Task.statusId` itself works. If that status
+ * is later deleted, the rule simply never matches again — the same "dangle harmlessly" treatment
+ * `deleteMilestone`/`deletePerson` give a stale reference elsewhere in this app, not a hard error.
+ */
+export interface AutomationTrigger {
+  type: AutomationTriggerType;
+  statusId?: string;
+}
+
+export type AutomationConditionField = "priority" | "tag" | "assignee";
+
+/** A single extra guard evaluated against the task in addition to the trigger match — kept to one field/one value deliberately (see AGENTS.md) rather than a general condition builder. */
+export interface AutomationCondition {
+  field: AutomationConditionField;
+  value: string;
+}
+
+export type AutomationActionType = "changeStatus" | "changePriority" | "addTag" | "setAssignee" | "setCustomField" | "notify";
+
+/**
+ * Only the fields relevant to `type` are populated. `notify` is the "log-only" action for when a
+ * rule's real intent is alerting someone — this app has no notification center yet (Phase 6), so it
+ * writes an `AutomationRunLogEntry` and shows a toast instead of any real delivery. See AGENTS.md.
+ */
+export interface AutomationAction {
+  type: AutomationActionType;
+  statusId?: string;
+  priority?: TaskPriority;
+  tag?: string;
+  assignee?: string;
+  customFieldId?: string;
+  customFieldValue?: string;
+  message?: string;
+}
+
+export interface AutomationRule {
+  id: string;
+  projectId: string;
+  name: string;
+  enabled: boolean;
+  trigger: AutomationTrigger;
+  condition: AutomationCondition | null;
+  actions: AutomationAction[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+/**
+ * One row per rule *firing* (not per action — every action a firing applies is folded into one
+ * `summary` string), written by `src/lib/queries/automations.ts`. `ruleName`/`taskTitle` are
+ * denormalized on purpose: this log is a historical record and stays readable even after the rule
+ * or task it refers to is later deleted/renamed (see AGENTS.md's cascade-delete note for why task
+ * deletion deliberately does NOT clear these rows). This is also the shape Phase 6's notification
+ * center is expected to read from — keep it simple and stable, don't grow it ad hoc.
+ */
+export interface AutomationRunLogEntry {
+  id: string;
+  ruleId: string;
+  ruleName: string;
+  projectId: string;
+  taskId: string;
+  taskTitle: string;
+  trigger: AutomationTriggerType;
+  summary: string;
+  firedAt: number;
+}
+
+// ---------------------------------------------------------------------------
+// AI provider config (Phase 5) — one pluggable client, three provider shapes.
+// ---------------------------------------------------------------------------
+
+export type AiProviderKind = "lmstudio" | "openai" | "azure";
+
+/**
+ * A singleton row (`id: "current"`, same pattern as `ActiveTimer`). Every provider's fields are
+ * kept nested under its own key rather than one flat field set, so switching `provider` in the
+ * settings UI never loses what was already typed into the other two — see AGENTS.md for the exact
+ * request shape each provider needs and why Azure can't share OpenAI's code path.
+ */
+export interface AiProviderConfig {
+  id: "current";
+  provider: AiProviderKind;
+  lmstudio: { baseUrl: string; model: string };
+  openai: { apiKey: string; model: string };
+  azure: { endpoint: string; deployment: string; apiVersion: string; apiKey: string };
+  updatedAt: number;
+}
+
 /** Suggested defaults surfaced in the UI; the field itself stays free text. */
 export const PROJECT_STATUS_SUGGESTIONS = [
   "Planning",
@@ -303,6 +408,9 @@ class ProjectTrackerDB extends Dexie {
   personTimeOff!: EntityTable<PersonTimeOff, "id">;
   timeEntries!: EntityTable<TimeEntry, "id">;
   activeTimers!: EntityTable<ActiveTimer, "id">;
+  automationRules!: EntityTable<AutomationRule, "id">;
+  automationRunLog!: EntityTable<AutomationRunLogEntry, "id">;
+  aiProviderConfig!: EntityTable<AiProviderConfig, "id">;
 
   constructor() {
     super("project-tracker");
@@ -377,6 +485,16 @@ class ProjectTrackerDB extends Dexie {
             if (project.budgetEstimate === undefined) project.budgetEstimate = null;
           });
       });
+
+    // v5 (Phase 5): automation rules + their run log, and the AI provider config. All three are
+    // brand-new tables — like v3's savedReportViews, no .upgrade() is needed since nothing on an
+    // existing table is changing shape. [ruleId+taskId] lets the overdue sweep cheaply ask "has
+    // this rule already fired for this task" without a full table scan (see automations.ts).
+    this.version(5).stores({
+      automationRules: "id, projectId, enabled, updatedAt",
+      automationRunLog: "id, ruleId, projectId, taskId, firedAt, [ruleId+taskId]",
+      aiProviderConfig: "id",
+    });
   }
 }
 
