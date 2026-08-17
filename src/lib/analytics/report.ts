@@ -1,4 +1,5 @@
 import type { Project, ReportFilters, Task } from "@/lib/db";
+import { startOfDay } from "@/lib/analytics/date-buckets";
 
 /** Same predicate shape TaskTable's own filter bar uses — kept here so the report builder and any future consumer share one definition instead of drifting apart. */
 export function applyReportFilters(tasks: Task[], filters: ReportFilters, statusName: (task: Task) => string): Task[] {
@@ -9,12 +10,25 @@ export function applyReportFilters(tasks: Task[], filters: ReportFilters, status
     if (filters.assignee && !t.assignee.toLowerCase().includes(filters.assignee.toLowerCase())) return false;
     // Added in Phase 5 for the /ask natural-language query feature (see AGENTS.md) — the report
     // builder's own UI never sets this, so `undefined` (every pre-existing SavedReportView) and
-    // `null` both mean "no constraint" here, identically.
-    if (filters.completed === true && t.completedAt === null) return false;
-    if (filters.completed === false && t.completedAt !== null) return false;
+    // `null` both mean "no constraint" here, identically. `completedAt` is typed as always
+    // `number | null`, but a task record from outside the app's own createTask/updateTask (hand-
+    // written test/import data missing the field entirely) can have it `undefined` — coerce that to
+    // `null` too rather than let a missing field silently read as "completed" via `!== null`.
+    const completedAt = t.completedAt ?? null;
+    if (filters.completed === true && completedAt === null) return false;
+    if (filters.completed === false && completedAt !== null) return false;
+    // Compare by calendar day, not raw epoch value. dueDate/startDate are always local midnight in
+    // this app's own UI, but createdAt/completedAt carry real time-of-day precision — a raw `>`/`<`
+    // comparison against a midnight dateTo wrongly excluded same-day results for those two fields
+    // (and would exclude a later-in-the-day dueDate too, if one were ever produced by something
+    // other than this app's own date picker). Normalizing both sides to their own calendar day
+    // makes "on or before dateTo" actually mean the whole dateTo day, regardless of time-of-day on
+    // either side. See AGENTS.md for the bug this fixes.
     const dateValue = t[filters.dateField];
-    if (filters.dateFrom !== null && (dateValue === null || dateValue < filters.dateFrom)) return false;
-    if (filters.dateTo !== null && (dateValue === null || dateValue > filters.dateTo)) return false;
+    if (filters.dateFrom !== null && (dateValue === null || startOfDay(dateValue) < startOfDay(filters.dateFrom)))
+      return false;
+    if (filters.dateTo !== null && (dateValue === null || startOfDay(dateValue) > startOfDay(filters.dateTo)))
+      return false;
     return true;
   });
 }

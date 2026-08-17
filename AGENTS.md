@@ -260,6 +260,41 @@ this pattern (extend the shared filter type, only wire UI where it's
 actually needed) is the template for adding another filter dimension later
 without touching every consumer.
 
+**Two real bugs found in code review after initial ship, both fixed in
+`applyReportFilters` itself** (so every consumer — report builder, `/ask`
+— gets the fix, not just the one that surfaced it):
+
+1. **`dateTo`/`dateFrom` used to compare raw epoch values, not calendar
+   days.** `dueDate`/`startDate` are always local midnight in this app's
+   own UI, so that happened to work for them, but `createdAt`/`completedAt`
+   carry real time-of-day precision (`Date.now()`) — a task completed at
+   3pm on the `dateTo` day was wrongly excluded from "completed by
+   `dateTo`" because its raw epoch value is *after* `dateTo`'s own midnight
+   value. Repro'd live via `/ask`: "what's overdue" (`dateTo` = yesterday)
+   excluded a task due *later in the day* on that exact cutoff date. Fixed
+   by comparing `startOfDay(dateValue)` against `startOfDay(filters.dateFrom
+   /dateTo)` (`src/lib/analytics/date-buckets.ts`'s `startOfDay`) instead of
+   the raw values — an inclusive day-bound now genuinely means the whole
+   day, regardless of what time-of-day either side carries. Check any
+   future date-range comparison in this codebase for the same raw-epoch
+   trap if the field being compared isn't guaranteed to be exactly
+   midnight.
+2. **`filters.completed === false` checked `t.completedAt !== null` —
+   strict, not defensive against a missing field.** `Task.completedAt` is
+   typed `number | null` and every path through this app's own
+   `createTask`/`updateTask` always sets it explicitly, so this was never
+   wrong for real app data. But a task record from anywhere else (hand-
+   written test/import data, a future migration that misses a field) with
+   `completedAt` simply *absent* (`undefined`, not `null`) read as
+   "completed" under the old `!== null` check and got wrongly excluded from
+   an "only incomplete" filter. Fixed with `t.completedAt ?? null` before
+   comparing — the same "coerce `undefined` to the field's real default"
+   move `db.ts`'s own `.upgrade()` migrations already use for exactly this
+   reason (see the Dexie schema section of README). Apply the same
+   defensive coercion to any other nullable `Task`/`Project` field you
+   compare with strict equality against data that might not have come
+   through this app's own query functions.
+
 ## Natural-language querying (Phase 5) — `src/lib/ai/nl-query.ts`, `/ask`
 
 The model's only job is turning a question into a `ReportFilters`-shaped
