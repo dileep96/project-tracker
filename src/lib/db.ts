@@ -582,6 +582,10 @@ export const PROJECT_STATUS_SUGGESTIONS = [
   "On Hold",
   "Completed",
   "Archived",
+  "Development",
+  "Testing",
+  "UAT",
+  "Production",
 ] as const;
 
 export const DEFAULT_TASK_STATUSES = ["To Do", "In Progress", "Done"] as const;
