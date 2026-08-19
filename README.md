@@ -32,6 +32,8 @@ For how this app was built — development phases, schema version history,
 project structure, and the engineering trade-offs behind it — see
 [DEVELOPMENT.md](DEVELOPMENT.md).
 
+![Projects overview](docs/screenshots/projects.png)
+
 ## Running locally
 
 ```bash
@@ -111,6 +113,8 @@ sharp edges, not duplicated here.
 
 ### Kanban board — `/projects/:id/board`
 
+![Kanban board](docs/screenshots/kanban.png)
+
 Columns are that project's own `taskStatuses` rows (the column model) read
 live, so adding/renaming/reordering statuses in "Manage columns" (a reused
 `StatusManager`) updates the board immediately. Cards sort within a column
@@ -126,6 +130,8 @@ after the fact. See `AGENTS.md`'s sharp edges for when a real DnD library
 would be justified instead.
 
 ### Gantt chart — `/projects/:id/gantt`
+
+![Gantt chart with critical path](docs/screenshots/gantt.png)
 
 Bars are positioned from each task's own `startDate`/`dueDate`
 (`src/lib/gantt/timeline-scale.ts`), grouped by status. Tasks with only one
@@ -150,6 +156,8 @@ Timeline) view — see "Recurring task generation" below.
 
 ### Calendar — `/calendar` (global) and `/projects/:id/calendar`
 
+![Calendar](docs/screenshots/calendar.png)
+
 Both routes render the same `MonthCalendar`, scoped differently. Tasks
 appear as a solid pill on their due date and, when the start date falls on
 a different day, an additional outlined pill on the start date. Clicking a
@@ -157,6 +165,8 @@ task opens its detail panel directly; clicking a day with more than one
 task opens a small popover listing all of that day's tasks.
 
 ### Timeline — `/timeline`
+
+![Portfolio timeline](docs/screenshots/timeline.png)
 
 Portfolio-level: one horizontal band per project, positioned by the
 min/max of its own tasks' dates and milestone dates, on one shared time
@@ -166,6 +176,8 @@ with no dated tasks or milestones fall to an "No dates yet" list instead
 of collapsing the shared axis.
 
 ## Analytics dashboard — `/dashboard`
+
+![Analytics dashboard](docs/screenshots/dashboard.png)
 
 Everything on the dashboard is computed live from `tasks`/`projects` on
 every render (via `useLiveQuery`) — there is no separate analytics/rollup
@@ -246,6 +258,8 @@ a deliberate choice over adding an FK column to `Task`:
 
 ### Workload / capacity — `/workload`
 
+![Workload capacity grid](docs/screenshots/workload.png)
+
 One page, two tabs. **Capacity** is the "who's overloaded, who has room"
 grid (`lib/analytics/capacity.ts`, `CapacityGrid.tsx`): person × week
 (current week + next 3, always exactly 4 columns — `defaultWorkloadWindow`
@@ -307,7 +321,11 @@ carries a `billable` flag, a `date` (the day it's *for*, independent of
 (or "Everyone"), page through weeks, see entries grouped by day with a
 total/billable/cost summary for that window.
 
+![Timesheets](docs/screenshots/timesheets.png)
+
 ### Budget tracking
+
+![Project budget tab](docs/screenshots/budget.png)
 
 **Actual cost = logged time × the logging person's hourly rate, always**
 (`lib/analytics/budget.ts`'s `actualCost`) — summed across every time entry
@@ -413,6 +431,8 @@ that's stayed overdue for days doesn't refire the same rule repeatedly. See
 
 ## Risk register — `/risks`
 
+![Risk register](docs/screenshots/risks.png)
+
 One cross-project view surfacing every real at-risk item, sorted by
 severity, with a click-through straight to the affected task (opens
 `TaskDetailSheet`) or project. Three sources, computed live (no separate
@@ -437,6 +457,8 @@ why low severity deliberately isn't rendered in the "everything's fine"
 green this app uses everywhere else.
 
 ## AI provider, summaries, and natural-language querying
+
+![AI provider settings](docs/screenshots/ai-settings.png)
 
 A settings page at `/settings/ai` configures **one of three OpenAI-
 compatible-ish providers** through a single pluggable client
@@ -500,6 +522,8 @@ concept of "your own" comment without real auth.
 
 ### Activity feed / audit log — task detail sheet's **Activity** tab, project detail page's **Activity** tab
 
+![Project activity feed](docs/screenshots/activity.png)
+
 One merged, chronological feed per task or project, combining three
 sources: **field changes** (a `fieldChangeLog` table — see AGENTS.md for
 exactly which `Task`/`Project` fields are tracked and why automation
@@ -510,6 +534,8 @@ too — see AGENTS.md for how that's made a single indexed query rather than
 a per-task fan-out.
 
 ### Notification center — bell icon (sidebar footer on desktop, header on mobile)
+
+![Notification panel](docs/screenshots/notifications.png)
 
 Click the bell for a panel with two tabs: **Notifications** (deadline
 reminders for overdue/due-soon tasks, automation firings, and risks — all
@@ -524,6 +550,8 @@ notifications with no single task). See AGENTS.md for the exact
 notification-id scheme and digest period math.
 
 ### Global search — `Cmd/Ctrl+K` from anywhere
+
+![Global search palette](docs/screenshots/search.png)
 
 A command-palette search across projects, tasks, and comments
 (`src/lib/search.ts`, plain substring matching), with type filter chips and
