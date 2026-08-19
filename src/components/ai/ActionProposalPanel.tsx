@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CheckCircle, WarningCircle, XCircle } from "@phosphor-icons/react";
+import { CheckCircle, CircleNotch, WarningCircle, XCircle } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { ValidatedProposal } from "@/lib/ai/actions";
@@ -38,10 +38,14 @@ export function ActionProposalPanel({ proposals, question }: { proposals: Valida
         "{question}" → the AI proposed {proposals.length} change{proposals.length === 1 ? "" : "s"}. Nothing happens until you approve each one.
       </p>
       <div className="flex flex-col gap-2">
-        {proposals.map((proposal) => {
+        {proposals.map((proposal, index) => {
           const state = statuses[proposal.id];
           return (
-            <div key={proposal.id} className="rounded-lg border border-border bg-card p-3">
+            <div
+              key={proposal.id}
+              className="animate-in rounded-lg border border-border bg-card p-3 fade-in-0 slide-in-from-bottom-1 duration-300 fill-mode-backwards"
+              style={{ animationDelay: `${index * 60}ms` }}
+            >
               <p className="text-sm">{proposal.summary}</p>
               {proposal.diff && proposal.diff.length > 0 && (
                 <ul className="mt-1.5 space-y-0.5 text-xs text-muted-foreground">
@@ -90,8 +94,16 @@ export function ActionProposalPanel({ proposals, question }: { proposals: Valida
                     </Button>
                   </div>
                 )}
-                {state.status === "executing" && <span className="text-xs text-muted-foreground">Applying…</span>}
-                {state.status === "done" && <span className="text-xs font-medium text-health-green-fg">Done.</span>}
+                {state.status === "executing" && (
+                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <CircleNotch className="size-3.5 shrink-0 animate-spin" /> Applying…
+                  </span>
+                )}
+                {state.status === "done" && (
+                  <span className="flex items-center gap-1.5 text-xs font-medium text-health-green-fg animate-in fade-in-0">
+                    <CheckCircle className="size-3.5 shrink-0" /> Done.
+                  </span>
+                )}
                 {state.status === "discarded" && <span className="text-xs text-muted-foreground">Discarded — nothing changed.</span>}
                 {state.status === "error" && (
                   <span className="flex items-center gap-1.5 text-xs text-health-red-fg">
