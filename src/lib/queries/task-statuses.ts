@@ -14,6 +14,7 @@ export async function seedDefaultStatuses(projectId: string): Promise<string> {
     name,
     order: index,
     isDefault: index === 0,
+    isDone: name === "Done",
     createdAt: now(),
   }));
   await db.taskStatuses.bulkAdd(rows);
@@ -28,6 +29,7 @@ export async function createStatus(projectId: string, name: string): Promise<Tas
     name,
     order: existing.length,
     isDefault: existing.length === 0,
+    isDone: false,
     createdAt: now(),
   };
   await db.taskStatuses.add(row);
@@ -57,6 +59,26 @@ export async function setDefaultStatus(projectId: string, id: string): Promise<v
     for (const s of statuses) {
       if (s.isDefault !== (s.id === id)) {
         await db.taskStatuses.update(s.id, { isDefault: s.id === id });
+      }
+    }
+  });
+}
+
+/**
+ * Toggles whether `id` is this project's "done" status — at most one at a time, but unlike
+ * `setDefaultStatus`, a project can also have *none* (clicking the current done status clears it
+ * rather than forcing a replacement). Clearing it, or never setting one, keeps the completedAt
+ * checkbox and this project's board fully decoupled — see `updateTask`'s doc comment.
+ */
+export async function setDoneStatus(projectId: string, id: string): Promise<void> {
+  const statuses = await listStatusesForProject(projectId);
+  const target = statuses.find((s) => s.id === id);
+  const makeItDone = !target?.isDone;
+  await db.transaction("rw", db.taskStatuses, async () => {
+    for (const s of statuses) {
+      const shouldBeDone = makeItDone && s.id === id;
+      if (s.isDone !== shouldBeDone) {
+        await db.taskStatuses.update(s.id, { isDone: shouldBeDone });
       }
     }
   });

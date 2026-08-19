@@ -48,6 +48,15 @@ export interface TaskStatus {
   name: string;
   order: number;
   isDefault: boolean;
+  /**
+   * Whether landing on this status counts as "done" for this project — at most one status per
+   * project, never required. Added in schema v8 so the completion checkbox and the Kanban board
+   * column can stay in sync in both directions (see `updateTask` in queries/tasks.ts): checking a
+   * task moves it to whichever status has this set, and moving a task onto or off that status
+   * checks or unchecks it in turn. A project with no status marked `isDone` keeps today's
+   * decoupled behavior — the sync is opt-in per project, not forced on existing workflows.
+   */
+  isDone: boolean;
   createdAt: number;
 }
 
@@ -511,6 +520,7 @@ export interface TemplateTaskStatus {
   name: string;
   order: number;
   isDefault: boolean;
+  isDone: boolean;
 }
 
 /**
@@ -743,6 +753,26 @@ class ProjectTrackerDB extends Dexie {
           .toCollection()
           .modify((project) => {
             if (project.startDate === undefined) project.startDate = null;
+          });
+      });
+
+    // v8: TaskStatus.isDone — see its doc comment above. `taskStatuses` is redeclared here (its
+    // index string is unchanged from v1) purely to backfill the new plain field, the same pattern
+    // v4/v7 already used. Existing rows named exactly "Done" (the seeded default workflow's own
+    // name — see DEFAULT_TASK_STATUSES) are backfilled to isDone: true; every other existing
+    // status, including a custom or renamed workflow with no status literally called "Done",
+    // backfills to false and keeps today's decoupled behavior until someone opts in via the
+    // project's status manager.
+    this.version(8)
+      .stores({
+        taskStatuses: "id, projectId, order",
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table("taskStatuses")
+          .toCollection()
+          .modify((status) => {
+            if (status.isDone === undefined) status.isDone = status.name === "Done";
           });
       });
   }

@@ -1,10 +1,17 @@
 import { useState } from "react";
 import { toast } from "sonner";
-import { ArrowDown, ArrowUp, Plus, Star, Trash } from "@phosphor-icons/react";
+import { ArrowDown, ArrowUp, CheckCircle, Plus, Star, Trash } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useTaskStatuses } from "@/hooks/use-task-statuses";
-import { createStatus, deleteStatus, moveStatus, renameStatus, setDefaultStatus } from "@/lib/queries/task-statuses";
+import {
+  createStatus,
+  deleteStatus,
+  moveStatus,
+  renameStatus,
+  setDefaultStatus,
+  setDoneStatus,
+} from "@/lib/queries/task-statuses";
 import { cn } from "@/lib/utils";
 
 export function StatusManager({ projectId }: { projectId: string }) {
@@ -27,7 +34,9 @@ export function StatusManager({ projectId }: { projectId: string }) {
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm text-muted-foreground">
-        This project's task workflow. Newly created tasks start in the default status.
+        This project's task workflow. Newly created tasks start in the default status. Mark one
+        status as done to keep it in sync with the completed checkbox — checking a task moves it
+        there, and moving a task on or off it checks or unchecks the box in turn.
       </p>
       <div className="flex flex-col gap-1.5">
         {(statuses ?? []).map((s, index) => (
@@ -49,6 +58,15 @@ export function StatusManager({ projectId }: { projectId: string }) {
               className={cn(!s.isDefault && "opacity-0 group-hover:opacity-100")}
             >
               <Star weight={s.isDefault ? "fill" : "regular"} className={cn(s.isDefault && "text-primary")} />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label={s.isDone ? "Done status — click to clear" : "Set as done status"}
+              onClick={() => setDoneStatus(projectId, s.id)}
+              className={cn(!s.isDone && "opacity-0 group-hover:opacity-100")}
+            >
+              <CheckCircle weight={s.isDone ? "fill" : "regular"} className={cn(s.isDone && "text-primary")} />
             </Button>
             <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
               <Button variant="ghost" size="icon-xs" aria-label="Move up" disabled={index === 0} onClick={() => moveStatus(projectId, s.id, "up")}>
