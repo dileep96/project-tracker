@@ -316,6 +316,7 @@ export function TaskTable({
                   checked={pageAllSelected ? true : pageSomeSelected ? "indeterminate" : false}
                   onCheckedChange={(checked) => togglePageSelected(checked === true)}
                   aria-label={pageAllSelected ? "Deselect all on this page" : "Select all on this page"}
+                  title={pageAllSelected ? "Deselect all on this page" : "Select all on this page"}
                 />
               </TableHead>
               <TableHead className="w-9" />
@@ -352,6 +353,7 @@ export function TaskTable({
                         checked={selectedIds.has(task.id)}
                         onCheckedChange={(checked) => toggleRowSelected(task.id, checked === true)}
                         aria-label={selectedIds.has(task.id) ? "Deselect task" : "Select task"}
+                        title={selectedIds.has(task.id) ? "Deselect task" : "Select task"}
                       />
                     </TableCell>
                     <TableCell>
@@ -359,6 +361,8 @@ export function TaskTable({
                         checked={completed}
                         onCheckedChange={(checked) => setTaskCompleted(task.id, checked === true)}
                         aria-label={completed ? "Mark not done" : "Mark done"}
+                        title={completed ? "Mark not done" : "Mark done"}
+                        className="rounded-full"
                       />
                     </TableCell>
                     <TableCell>
