@@ -1,9 +1,10 @@
 import { generateId } from "@/lib/ids";
-import { TASK_PRIORITIES, type TaskPriority, type AiProviderConfig } from "@/lib/db";
+import { TASK_PRIORITIES, type Task, type TaskPriority, type AiProviderConfig } from "@/lib/db";
 import { chatCompletion, type ChatMessage, type ToolDef } from "@/lib/ai/client";
 import { parseLocalDate } from "@/lib/ai/nl-query";
-import { createTask } from "@/lib/queries/tasks";
+import { createTask, updateTask } from "@/lib/queries/tasks";
 import { createProject } from "@/lib/queries/projects";
+import { moveTasksToProject } from "@/lib/queries/move-tasks";
 
 /**
  * The AI Action Layer's write path — see the published plan's "propose, validate, confirm,
@@ -14,10 +15,17 @@ import { createProject } from "@/lib/queries/projects";
  * calls (`ActionProposalPanel`). Step 4 (confirm) lives entirely in the UI layer, deliberately not
  * here, so this module can never skip the human gate by construction.
  *
- * Phase B (this file's first version): additive actions only — create_task, create_project.
- * Nothing here can touch or remove an existing row. Phase C adds update_task/move_task; Phase D
+ * Phase B added additive actions only — create_task, create_project. Phase C (this version) adds
+ * update_task/move_task: now touching a row that already exists, so every proposal also carries a
+ * before -> after diff, the same field-change language the Activity tab already renders, so the
+ * preview says exactly what's about to change rather than just "the task will be updated." Phase D
  * adds delete_task with its own stronger UI confirmation. See the plan's §05 for the full staging
  * rationale — each phase is its own PR, reusing this same file and pattern.
+ *
+ * update_task/move_task never trust a task id from the model (it doesn't know real ids) — they
+ * take a `taskTitle` the model just copies from the user's own wording, resolved against the live
+ * task list in `resolveTaskByTitle` below. An ambiguous or unmatched title is rejected with a
+ * clear reason, the same "never silently guess" rule every other resolver in this file follows.
  */
 
 const isoDate = new Intl.DateTimeFormat("en-CA");
@@ -25,6 +33,13 @@ const isoDate = new Intl.DateTimeFormat("en-CA");
 export interface ActionContext {
   projects: { id: string; name: string }[];
   statusesByProject: Record<string, { id: string; name: string; isDefault: boolean }[]>;
+  tasks: { id: string; title: string; projectId: string; projectName: string; priority: TaskPriority; statusId: string; statusName: string; assignee: string; dueDate: number | null; startDate: number | null }[];
+}
+
+export interface ProposalDiffLine {
+  field: string;
+  before: string;
+  after: string;
 }
 
 export interface ValidatedProposal {
@@ -32,7 +47,9 @@ export interface ValidatedProposal {
   tool: string;
   /** Plain-language preview shown to the user — built by this app's own code from validated args, never the model's own phrasing. */
   summary: string;
-  /** Only ever calls an existing, already-tested query function (createTask/createProject/...) — never a raw db write. */
+  /** Present for edits to an existing row (update_task/move_task) — the exact before -> after values, not just a description of the change. */
+  diff?: ProposalDiffLine[];
+  /** Only ever calls an existing, already-tested query function (createTask/createProject/updateTask/moveTasksToProject/...) — never a raw db write. */
   execute: () => Promise<void>;
 }
 
@@ -86,16 +103,57 @@ const CREATE_PROJECT_TOOL: ToolDef = {
   },
 };
 
-const ACTION_TOOLS: ToolDef[] = [CREATE_TASK_TOOL, CREATE_PROJECT_TOOL];
+const UPDATE_TASK_TOOL: ToolDef = {
+  type: "function",
+  function: {
+    name: "update_task",
+    description:
+      "Change one or more fields of an existing task — title, priority, status, assignee, start date, or due date. Only call this when the user is clearly asking to change a task that already exists, and only set the fields they actually asked to change.",
+    parameters: {
+      type: "object",
+      properties: {
+        taskTitle: { type: "string", description: "The existing task's title, as the user phrased it." },
+        projectName: { type: "string", description: "The task's project, if the user mentioned it — helps disambiguate a title that could match more than one task." },
+        newTitle: { type: "string", description: "Only if the user asked to rename the task." },
+        priority: { type: "string", enum: TASK_PRIORITIES },
+        statusName: { type: "string", description: "An existing status in the task's own project, e.g. \"In Progress\"." },
+        assignee: { type: "string" },
+        dueDate: { type: "string", description: "YYYY-MM-DD" },
+        startDate: { type: "string", description: "YYYY-MM-DD" },
+      },
+      required: ["taskTitle"],
+    },
+  },
+};
+
+const MOVE_TASK_TOOL: ToolDef = {
+  type: "function",
+  function: {
+    name: "move_task",
+    description: "Move an existing task to a different project. Only call this when the user clearly asks to move a task.",
+    parameters: {
+      type: "object",
+      properties: {
+        taskTitle: { type: "string", description: "The existing task's title, as the user phrased it." },
+        currentProjectName: { type: "string", description: "The task's current project, if the user mentioned it — helps disambiguate a title that could match more than one task." },
+        targetProjectName: { type: "string", description: "The project to move the task into." },
+      },
+      required: ["taskTitle", "targetProjectName"],
+    },
+  },
+};
+
+const ACTION_TOOLS: ToolDef[] = [CREATE_TASK_TOOL, CREATE_PROJECT_TOOL, UPDATE_TASK_TOOL, MOVE_TASK_TOOL];
 
 function buildActionSystemPrompt(context: ActionContext): string {
   const projectLines = context.projects.length > 0 ? context.projects.map((p) => `- "${p.name}"`).join("\n") : "(no projects exist yet)";
   return [
-    "You help with a personal project-tracking app. You may call at most one of the tools you were given, but ONLY when the user is clearly, unambiguously asking to CREATE something brand new.",
-    "If the user is asking a question, or asking to change, move, complete, or delete something that already exists, do NOT call any tool — just reply with the single word NONE and nothing else.",
+    "You help with a personal project-tracking app. You may call at most one of the tools you were given, but ONLY when the user is clearly, unambiguously asking to create, change, or move something that already exists or should exist — never for a plain question.",
+    "If the user is only asking a question, or asking to delete something, do NOT call any tool — just reply with the single word NONE and nothing else.",
     "Never call a tool for a vague request you're not confident about — replying NONE is always safe, a wrong tool call is not.",
     `Known existing projects:\n${projectLines}`,
-    "For create_task, projectName should name one of the known existing projects above. If the user clearly means a project that isn't in that list, still call create_task with the name they used rather than guessing a different one — a validation step you don't see will handle a name that doesn't match.",
+    "When a tool takes a project name, use one of the known existing projects above if the user's wording is close to it, rather than inventing a different name — a validation step you don't see will catch a name that doesn't match.",
+    "For update_task or move_task, use the task's title exactly as the user phrased it — you don't need to know the full task list, a later step resolves it against real data. Only set a field on update_task the user actually asked to change; never invent a value for priority, status, assignee, or a date.",
     "Any date must be in YYYY-MM-DD form.",
   ].join("\n\n");
 }
@@ -121,6 +179,36 @@ function resolveProjectByName(rawName: unknown, context: ActionContext): { id: s
 function defaultStatusId(projectId: string, context: ActionContext): string | null {
   const statuses = context.statusesByProject[projectId] ?? [];
   return statuses.find((s) => s.isDefault)?.id ?? statuses[0]?.id ?? null;
+}
+
+type ActionTask = ActionContext["tasks"][number];
+
+/**
+ * Resolves a task the model referenced only by title text (never a real id — see this file's
+ * top-of-file doc comment) against the live task list. Tries an exact title match first, falls
+ * back to a substring match, and — only when more than one task is still ambiguous — narrows by
+ * the caller's project hint. Anything still ambiguous or unmatched is rejected outright rather
+ * than picking one silently, same as resolveProjectByName above.
+ */
+function resolveTaskByTitle(rawTitle: unknown, rawProjectHint: unknown, context: ActionContext): ActionTask | { error: string } {
+  const title = typeof rawTitle === "string" ? rawTitle.trim() : "";
+  if (!title) return { error: "No task title was given." };
+  const lower = title.toLowerCase();
+
+  let candidates = context.tasks.filter((t) => t.title.toLowerCase() === lower);
+  if (candidates.length === 0) candidates = context.tasks.filter((t) => t.title.toLowerCase().includes(lower));
+
+  const hint = typeof rawProjectHint === "string" ? rawProjectHint.trim().toLowerCase() : "";
+  if (hint && candidates.length > 1) {
+    const narrowed = candidates.filter((t) => t.projectName.toLowerCase().includes(hint));
+    if (narrowed.length > 0) candidates = narrowed;
+  }
+
+  if (candidates.length === 0) return { error: `No task matches "${title}".` };
+  if (candidates.length > 1) {
+    return { error: `"${title}" matches more than one task (${candidates.map((t) => `"${t.title}" in ${t.projectName}`).join(", ")}) — say which project.` };
+  }
+  return candidates[0];
 }
 
 // ---------------------------------------------------------------------------
@@ -179,9 +267,92 @@ const validateCreateProject: Validator = (args) => {
   };
 };
 
+const validateUpdateTask: Validator = (args, context) => {
+  const task = resolveTaskByTitle(args.taskTitle, args.projectName, context);
+  if ("error" in task) return task;
+
+  const patch: Partial<Omit<Task, "id" | "createdAt">> = {};
+  const diff: ProposalDiffLine[] = [];
+
+  const newTitle = readString(args, "newTitle");
+  if (newTitle && newTitle !== task.title) {
+    patch.title = newTitle;
+    diff.push({ field: "Title", before: task.title, after: newTitle });
+  }
+
+  if (TASK_PRIORITIES.includes(args.priority as TaskPriority) && args.priority !== task.priority) {
+    patch.priority = args.priority as TaskPriority;
+    diff.push({ field: "Priority", before: task.priority, after: args.priority as string });
+  }
+
+  const statusNameArg = readString(args, "statusName");
+  if (statusNameArg) {
+    const status = (context.statusesByProject[task.projectId] ?? []).find((s) => s.name.toLowerCase() === statusNameArg.toLowerCase());
+    if (!status) return { error: `"${statusNameArg}" isn't a status in ${task.projectName}.` };
+    if (status.id !== task.statusId) {
+      patch.statusId = status.id;
+      diff.push({ field: "Status", before: task.statusName, after: status.name });
+    }
+  }
+
+  if (typeof args.assignee === "string" && args.assignee.trim() !== task.assignee) {
+    const assignee = args.assignee.trim();
+    patch.assignee = assignee;
+    diff.push({ field: "Assignee", before: task.assignee || "(none)", after: assignee || "(none)" });
+  }
+
+  if (typeof args.dueDate === "string") {
+    const dueDate = parseLocalDate(args.dueDate);
+    if (dueDate !== task.dueDate) {
+      patch.dueDate = dueDate;
+      diff.push({ field: "Due date", before: task.dueDate !== null ? isoDate.format(task.dueDate) : "(none)", after: dueDate !== null ? isoDate.format(dueDate) : "(none)" });
+    }
+  }
+  if (typeof args.startDate === "string") {
+    const startDate = parseLocalDate(args.startDate);
+    if (startDate !== task.startDate) {
+      patch.startDate = startDate;
+      diff.push({ field: "Start date", before: task.startDate !== null ? isoDate.format(task.startDate) : "(none)", after: startDate !== null ? isoDate.format(startDate) : "(none)" });
+    }
+  }
+
+  if (diff.length === 0) return { error: `The AI didn't specify any actual change to "${task.title}".` };
+
+  return {
+    id: generateId(),
+    tool: "update_task",
+    summary: `Update "${task.title}" in ${task.projectName}`,
+    diff,
+    execute: async () => {
+      await updateTask(task.id, patch);
+    },
+  };
+};
+
+const validateMoveTask: Validator = (args, context) => {
+  const task = resolveTaskByTitle(args.taskTitle, args.currentProjectName, context);
+  if ("error" in task) return task;
+  const target = resolveProjectByName(args.targetProjectName, context);
+  if ("error" in target) return target;
+  if (target.id === task.projectId) return { error: `"${task.title}" is already in ${target.name}.` };
+
+  return {
+    id: generateId(),
+    tool: "move_task",
+    summary: `Move "${task.title}" from ${task.projectName} to ${target.name}`,
+    diff: [{ field: "Project", before: task.projectName, after: target.name }],
+    execute: async () => {
+      const result = await moveTasksToProject([task.id], target.id);
+      if (result.moved.length === 0) throw new Error("The move didn't go through — the task may already be somewhere else.");
+    },
+  };
+};
+
 const VALIDATORS: Record<string, Validator> = {
   create_task: validateCreateTask,
   create_project: validateCreateProject,
+  update_task: validateUpdateTask,
+  move_task: validateMoveTask,
 };
 
 // ---------------------------------------------------------------------------
