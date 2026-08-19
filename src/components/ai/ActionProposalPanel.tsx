@@ -41,6 +41,15 @@ export function ActionProposalPanel({ proposals, question }: { proposals: Valida
           return (
             <div key={proposal.id} className="rounded-lg border border-border bg-card p-3">
               <p className="text-sm">{proposal.summary}</p>
+              {proposal.diff && proposal.diff.length > 0 && (
+                <ul className="mt-1.5 space-y-0.5 text-xs text-muted-foreground">
+                  {proposal.diff.map((d) => (
+                    <li key={d.field}>
+                      <span className="font-medium text-foreground">{d.field}:</span> {d.before} → {d.after}
+                    </li>
+                  ))}
+                </ul>
+              )}
               <div className="mt-2 flex items-center gap-2">
                 {state.status === "pending" && (
                   <>

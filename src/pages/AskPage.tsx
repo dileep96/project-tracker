@@ -58,7 +58,7 @@ export function AskPage() {
   }, [tasks, projects, statusName]);
 
   const actionContext: ActionContext | null = useMemo(() => {
-    if (!projects || !statusesByProject) return null;
+    if (!projects || !statusesByProject || !tasks) return null;
     return {
       projects: projects.map((p) => ({ id: p.id, name: p.name })),
       statusesByProject: Object.fromEntries(
@@ -67,8 +67,20 @@ export function AskPage() {
           statuses.map((s) => ({ id: s.id, name: s.name, isDefault: s.isDefault })),
         ])
       ),
+      tasks: tasks.map((t) => ({
+        id: t.id,
+        title: t.title,
+        projectId: t.projectId,
+        projectName: projectName(t),
+        priority: t.priority,
+        statusId: t.statusId,
+        statusName: statusName(t),
+        assignee: t.assignee,
+        dueDate: t.dueDate,
+        startDate: t.startDate,
+      })),
     };
-  }, [projects, statusesByProject]);
+  }, [projects, statusesByProject, tasks, projectName, statusName]);
 
   const results = useMemo(() => {
     if (!filters || !tasks) return [];
