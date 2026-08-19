@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useState } from "react";
-import { PaperPlaneRight, WarningCircle } from "@phosphor-icons/react";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { PaperPlaneRight, Paperclip, WarningCircle, X } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { TaskTable } from "@/components/tasks/TaskTable";
@@ -12,9 +12,12 @@ import { useProjects } from "@/hooks/use-projects";
 import { useAllTaskStatusesByProject } from "@/hooks/use-task-statuses";
 import { applyReportFilters } from "@/lib/analytics/report";
 import { buildNlQueryContext, buildNlQueryRequest, describeFilters, interpretNlQuery, type NlQueryContext } from "@/lib/ai/nl-query";
+import { buildQueryAnswerRequest, buildQueryResultRows, generateQueryAnswer } from "@/lib/ai/query-answer";
+import { processAttachment, type ProcessedAttachment } from "@/lib/ai/attachments";
 import type { ReportFilters, Task } from "@/lib/db";
 
 const EXAMPLE_QUESTIONS = ["What's overdue?", "High priority tasks", "Unassigned tasks", "Completed this month"];
+const ACCEPTED_FILE_TYPES = "application/pdf,image/png,image/jpeg,image/webp,image/gif";
 
 export function AskPage() {
   const config = useAiProviderConfig();
@@ -23,16 +26,26 @@ export function AskPage() {
   const statusesByProject = useAllTaskStatusesByProject();
 
   const [question, setQuestion] = useState("");
+  const [attachments, setAttachments] = useState<ProcessedAttachment[]>([]);
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const [asking, setAsking] = useState(false);
   const [answeredQuestion, setAnsweredQuestion] = useState<string | null>(null);
   const [filters, setFilters] = useState<ReportFilters | null>(null);
   const [rawResponse, setRawResponse] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const [answerText, setAnswerText] = useState<string | null>(null);
+  const [answerSentText, setAnswerSentText] = useState<string | null>(null);
+  const [answerError, setAnswerError] = useState<string | null>(null);
+
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
 
   const statusName = useCallback((task: Task) => statusesByProject?.[task.projectId]?.find((s) => s.id === task.statusId)?.name ?? "", [statusesByProject]);
   const statusesForProject = useCallback((projectId: string) => statusesByProject?.[projectId] ?? [], [statusesByProject]);
   const projectsById = useMemo(() => Object.fromEntries((projects ?? []).map((p) => [p.id, p])), [projects]);
+  const projectName = useCallback((task: Task) => projectsById[task.projectId]?.name ?? "", [projectsById]);
 
   const context: NlQueryContext | null = useMemo(() => {
     if (!tasks || !projects) return null;
@@ -46,21 +59,57 @@ export function AskPage() {
 
   const loading = tasks === undefined || projects === undefined || statusesByProject === undefined;
 
+  async function handleFilesSelected(fileList: FileList | null) {
+    if (!fileList || fileList.length === 0) return;
+    setAttachError(null);
+    for (const file of Array.from(fileList)) {
+      try {
+        const processed = await processAttachment(file);
+        setAttachments((prev) => [...prev, processed]);
+      } catch (err) {
+        setAttachError(err instanceof Error ? err.message : "Couldn't read that file.");
+      }
+    }
+  }
+
+  function removeAttachment(index: number) {
+    setAttachments((prev) => prev.filter((_, i) => i !== index));
+  }
+
   async function ask(q: string) {
     const trimmed = q.trim();
-    if (!trimmed || !config || !context) return;
+    if ((!trimmed && attachments.length === 0) || !config || !context) return;
     setAsking(true);
     setError(null);
-    const request = buildNlQueryRequest(trimmed, context);
+    setAnswerText(null);
+    setAnswerError(null);
+
+    const request = buildNlQueryRequest(trimmed, context, attachments);
     const result = await interpretNlQuery(config, request, context);
-    if (result.ok) {
-      setFilters(result.filters);
-      setRawResponse(result.raw);
-      setAnsweredQuestion(trimmed);
-    } else {
+    if (!result.ok) {
       setError(result.error);
       setRawResponse(result.raw ?? null);
+      setAsking(false);
+      return;
     }
+
+    setFilters(result.filters);
+    setRawResponse(result.raw);
+    setAnsweredQuestion(trimmed);
+
+    // Second, separate call — see lib/ai/query-answer.ts: only ever shown the tasks that just
+    // matched the filter above, never asked to describe results it hasn't been given.
+    const matched = tasks ? applyReportFilters(tasks, result.filters, statusName) : [];
+    const rows = buildQueryResultRows(matched, projectName, statusName);
+    const answerRequest = buildQueryAnswerRequest(trimmed || "(see attached file)", rows, matched.length);
+    const answerResult = await generateQueryAnswer(config, answerRequest.messages);
+    if (answerResult.ok) {
+      setAnswerText(answerResult.answer);
+    } else {
+      setAnswerError(answerResult.error);
+    }
+    setAnswerSentText(JSON.stringify(answerRequest.messages, null, 2));
+
     setAsking(false);
   }
 
@@ -77,7 +126,8 @@ export function AskPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Ask</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Ask a question in plain language — it's turned into a real filter and run against your actual tasks, never fabricated.
+          Ask a question in plain language — it's turned into a real filter and run against your actual tasks, never fabricated. Attach a PDF or
+          an image for context.
         </p>
       </div>
 
@@ -90,20 +140,58 @@ export function AskPage() {
               e.preventDefault();
               ask(question);
             }}
-            className="flex gap-2"
+            className="flex flex-col gap-2"
           >
-            <Input
-              id="ask-question"
-              name="question"
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              placeholder="What's overdue this week?"
-              className="h-10"
-              autoFocus
-            />
-            <Button type="submit" disabled={asking || !question.trim()}>
-              <PaperPlaneRight /> {asking ? "Thinking…" : "Ask"}
-            </Button>
+            <div className="flex gap-2">
+              <Input
+                id="ask-question"
+                name="question"
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                placeholder="What's overdue this week?"
+                className="h-10"
+                autoFocus
+              />
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept={ACCEPTED_FILE_TYPES}
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  handleFilesSelected(e.target.files);
+                  e.target.value = "";
+                }}
+              />
+              <Button type="button" variant="outline" size="icon" aria-label="Attach a PDF or image" onClick={() => fileInputRef.current?.click()}>
+                <Paperclip />
+              </Button>
+              <Button type="submit" disabled={asking || (!question.trim() && attachments.length === 0)}>
+                <PaperPlaneRight /> {asking ? "Thinking…" : "Ask"}
+              </Button>
+            </div>
+
+            {attachments.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {attachments.map((a, i) => (
+                  <span
+                    key={`${a.name}-${i}`}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted px-2.5 py-1 text-xs"
+                  >
+                    {a.name}
+                    <button
+                      type="button"
+                      aria-label={`Remove ${a.name}`}
+                      onClick={() => removeAttachment(i)}
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            {attachError && <p className="text-xs text-health-red-fg">{attachError}</p>}
           </form>
 
           {!answeredQuestion && !error && (
@@ -139,6 +227,10 @@ export function AskPage() {
                   <span className="font-medium text-foreground">{describeFilters(filters)}</span>
                 </p>
               </div>
+
+              {answerText && <p className="text-sm leading-relaxed">{answerText}</p>}
+              {answerError && <p className="text-xs text-muted-foreground">Couldn't write a summary: {answerError}</p>}
+
               <p className="text-xs text-muted-foreground">
                 {results.length} task{results.length === 1 ? "" : "s"} match
               </p>
@@ -150,11 +242,22 @@ export function AskPage() {
                 projectsById={projectsById}
                 emptyMessage="No tasks match this question."
               />
-              {rawResponse && (
+              {(rawResponse || answerSentText) && (
                 <details className="rounded-lg border border-border/60 text-xs">
-                  <summary className="cursor-pointer px-3 py-2 font-medium text-muted-foreground select-none">What the model returned</summary>
-                  <div className="max-h-40 overflow-auto border-t border-border/60 p-3">
-                    <pre className="font-mono whitespace-pre-wrap text-muted-foreground">{rawResponse}</pre>
+                  <summary className="cursor-pointer px-3 py-2 font-medium text-muted-foreground select-none">What was sent and returned</summary>
+                  <div className="max-h-56 overflow-auto border-t border-border/60 p-3">
+                    {rawResponse && (
+                      <>
+                        <p className="mb-1 font-medium text-muted-foreground">Filter model's raw response</p>
+                        <pre className="mb-3 font-mono whitespace-pre-wrap text-muted-foreground">{rawResponse}</pre>
+                      </>
+                    )}
+                    {answerSentText && (
+                      <>
+                        <p className="mb-1 font-medium text-muted-foreground">Sent for the written answer</p>
+                        <pre className="font-mono whitespace-pre-wrap text-muted-foreground">{answerSentText}</pre>
+                      </>
+                    )}
                   </div>
                 </details>
               )}

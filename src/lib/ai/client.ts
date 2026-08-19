@@ -13,9 +13,17 @@ import type { AiProviderConfig } from "@/lib/db";
  * request/response objects that could carry a key.
  */
 
+/**
+ * A message's `content` is either plain text (every call site before Phase A, and still the
+ * common case) or a multi-part array mixing text with images — the standard shape all three
+ * providers already accept in their Chat Completions API, so no per-provider branching is needed
+ * beyond this type: `prepareRequest` below just serializes whatever `content` is, unchanged.
+ */
+export type ChatContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: string | ChatContentPart[];
 }
 
 export type ChatCompletionResult = { ok: true; content: string; model: string } | { ok: false; error: string };
