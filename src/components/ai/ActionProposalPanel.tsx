@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { CheckCircle, WarningCircle, XCircle } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import type { ValidatedProposal } from "@/lib/ai/actions";
 
 type ProposalStatus = "pending" | "executing" | "done" | "error" | "discarded";
@@ -15,6 +16,7 @@ export function ActionProposalPanel({ proposals, question }: { proposals: Valida
   const [statuses, setStatuses] = useState<Record<string, { status: ProposalStatus; error?: string }>>(() =>
     Object.fromEntries(proposals.map((p) => [p.id, { status: "pending" as ProposalStatus }]))
   );
+  const [confirmTexts, setConfirmTexts] = useState<Record<string, string>>({});
 
   async function approve(proposal: ValidatedProposal) {
     setStatuses((prev) => ({ ...prev, [proposal.id]: { status: "executing" } }));
@@ -50,16 +52,43 @@ export function ActionProposalPanel({ proposals, question }: { proposals: Valida
                   ))}
                 </ul>
               )}
-              <div className="mt-2 flex items-center gap-2">
-                {state.status === "pending" && (
+              <div className="mt-2 flex flex-col gap-1.5">
+                {state.status === "pending" && proposal.requiresTypedConfirm && (
                   <>
+                    <p className="flex items-center gap-1.5 text-xs text-health-red-fg">
+                      <WarningCircle className="size-3.5 shrink-0" /> This can't be undone. Type "{proposal.requiresTypedConfirm}" to confirm.
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        value={confirmTexts[proposal.id] ?? ""}
+                        onChange={(e) => setConfirmTexts((prev) => ({ ...prev, [proposal.id]: e.target.value }))}
+                        placeholder={proposal.requiresTypedConfirm}
+                        className="h-8 max-w-xs text-xs"
+                        aria-label={`Type "${proposal.requiresTypedConfirm}" to confirm deletion`}
+                      />
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        disabled={confirmTexts[proposal.id] !== proposal.requiresTypedConfirm}
+                        onClick={() => approve(proposal)}
+                      >
+                        <CheckCircle /> Delete
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => discard(proposal)}>
+                        <XCircle /> Discard
+                      </Button>
+                    </div>
+                  </>
+                )}
+                {state.status === "pending" && !proposal.requiresTypedConfirm && (
+                  <div className="flex items-center gap-2">
                     <Button size="sm" onClick={() => approve(proposal)}>
                       <CheckCircle /> Approve
                     </Button>
                     <Button size="sm" variant="outline" onClick={() => discard(proposal)}>
                       <XCircle /> Discard
                     </Button>
-                  </>
+                  </div>
                 )}
                 {state.status === "executing" && <span className="text-xs text-muted-foreground">Applying…</span>}
                 {state.status === "done" && <span className="text-xs font-medium text-health-green-fg">Done.</span>}

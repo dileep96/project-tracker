@@ -2,7 +2,7 @@ import { generateId } from "@/lib/ids";
 import { TASK_PRIORITIES, type Task, type TaskPriority, type AiProviderConfig } from "@/lib/db";
 import { chatCompletion, type ChatMessage, type ToolDef } from "@/lib/ai/client";
 import { parseLocalDate } from "@/lib/ai/nl-query";
-import { createTask, updateTask } from "@/lib/queries/tasks";
+import { createTask, deleteTask, updateTask } from "@/lib/queries/tasks";
 import { createProject } from "@/lib/queries/projects";
 import { moveTasksToProject } from "@/lib/queries/move-tasks";
 
@@ -26,6 +26,12 @@ import { moveTasksToProject } from "@/lib/queries/move-tasks";
  * take a `taskTitle` the model just copies from the user's own wording, resolved against the live
  * task list in `resolveTaskByTitle` below. An ambiguous or unmatched title is rejected with a
  * clear reason, the same "never silently guess" rule every other resolver in this file follows.
+ *
+ * Phase D (this version) adds delete_task, the plan's one deliberately-highest-risk tool.
+ * `ConfirmDeleteDialog` already tells a person "This can't be undone" on every manual delete in
+ * this app; an AI-proposed delete gets a *stronger* bar, not a lighter one, per the plan — its
+ * proposal carries `requiresTypedConfirm` (the task's own title), and `ActionProposalPanel` only
+ * enables that proposal's Approve button once the typed text matches exactly.
  */
 
 const isoDate = new Intl.DateTimeFormat("en-CA");
@@ -49,7 +55,9 @@ export interface ValidatedProposal {
   summary: string;
   /** Present for edits to an existing row (update_task/move_task) — the exact before -> after values, not just a description of the change. */
   diff?: ProposalDiffLine[];
-  /** Only ever calls an existing, already-tested query function (createTask/createProject/updateTask/moveTasksToProject/...) — never a raw db write. */
+  /** Present only for delete_task — the exact text (the task's own title) the user must type back before the UI enables Approve. A stronger bar than a manual delete's own confirm click, deliberately, per the plan. */
+  requiresTypedConfirm?: string;
+  /** Only ever calls an existing, already-tested query function (createTask/createProject/updateTask/moveTasksToProject/deleteTask/...) — never a raw db write. */
   execute: () => Promise<void>;
 }
 
@@ -143,14 +151,31 @@ const MOVE_TASK_TOOL: ToolDef = {
   },
 };
 
-const ACTION_TOOLS: ToolDef[] = [CREATE_TASK_TOOL, CREATE_PROJECT_TOOL, UPDATE_TASK_TOOL, MOVE_TASK_TOOL];
+const DELETE_TASK_TOOL: ToolDef = {
+  type: "function",
+  function: {
+    name: "delete_task",
+    description:
+      "Permanently delete an existing task. Only call this when the user is clearly and explicitly asking to delete or remove a task — never for completing, moving, or otherwise changing one, and never when you're unsure.",
+    parameters: {
+      type: "object",
+      properties: {
+        taskTitle: { type: "string", description: "The existing task's title, as the user phrased it." },
+        projectName: { type: "string", description: "The task's project, if the user mentioned it — helps disambiguate a title that could match more than one task." },
+      },
+      required: ["taskTitle"],
+    },
+  },
+};
+
+const ACTION_TOOLS: ToolDef[] = [CREATE_TASK_TOOL, CREATE_PROJECT_TOOL, UPDATE_TASK_TOOL, MOVE_TASK_TOOL, DELETE_TASK_TOOL];
 
 function buildActionSystemPrompt(context: ActionContext): string {
   const projectLines = context.projects.length > 0 ? context.projects.map((p) => `- "${p.name}"`).join("\n") : "(no projects exist yet)";
   return [
-    "You help with a personal project-tracking app. You may call at most one of the tools you were given, but ONLY when the user is clearly, unambiguously asking to create, change, or move something that already exists or should exist — never for a plain question.",
-    "If the user is only asking a question, or asking to delete something, do NOT call any tool — just reply with the single word NONE and nothing else.",
-    "Never call a tool for a vague request you're not confident about — replying NONE is always safe, a wrong tool call is not.",
+    "You help with a personal project-tracking app. You may call at most one of the tools you were given, but ONLY when the user is clearly, unambiguously asking to create, change, move, or delete something — never for a plain question.",
+    "If the user is only asking a question, do NOT call any tool — just reply with the single word NONE and nothing else.",
+    "Never call a tool for a vague request you're not confident about — replying NONE is always safe, a wrong tool call is not. This matters most of all for delete_task: only call it when the user's intent to permanently remove a task is completely unambiguous, and prefer NONE over guessing.",
     `Known existing projects:\n${projectLines}`,
     "When a tool takes a project name, use one of the known existing projects above if the user's wording is close to it, rather than inventing a different name — a validation step you don't see will catch a name that doesn't match.",
     "For update_task or move_task, use the task's title exactly as the user phrased it — you don't need to know the full task list, a later step resolves it against real data. Only set a field on update_task the user actually asked to change; never invent a value for priority, status, assignee, or a date.",
@@ -348,11 +373,27 @@ const validateMoveTask: Validator = (args, context) => {
   };
 };
 
+const validateDeleteTask: Validator = (args, context) => {
+  const task = resolveTaskByTitle(args.taskTitle, args.projectName, context);
+  if ("error" in task) return task;
+
+  return {
+    id: generateId(),
+    tool: "delete_task",
+    summary: `Delete "${task.title}" from ${task.projectName}`,
+    requiresTypedConfirm: task.title,
+    execute: async () => {
+      await deleteTask(task.id);
+    },
+  };
+};
+
 const VALIDATORS: Record<string, Validator> = {
   create_task: validateCreateTask,
   create_project: validateCreateProject,
   update_task: validateUpdateTask,
   move_task: validateMoveTask,
+  delete_task: validateDeleteTask,
 };
 
 // ---------------------------------------------------------------------------
