@@ -75,7 +75,7 @@ export async function saveProjectAsTemplate(input: SaveProjectAsTemplateInput): 
     name: input.name,
     description: input.description ?? "",
     sourceProjectId: input.projectId,
-    statuses: sortedStatuses.map((s) => ({ name: s.name, order: s.order, isDefault: s.isDefault })),
+    statuses: sortedStatuses.map((s) => ({ name: s.name, order: s.order, isDefault: s.isDefault, isDone: s.isDone })),
     customFieldDefs: projectScopedFieldDefs.map((f) => ({ name: f.name, type: f.type, options: f.options, order: f.order })),
     tasks: templateTasks,
     createdAt: timestamp,
@@ -115,7 +115,18 @@ export async function createProjectFromTemplate(input: CreateProjectFromTemplate
     const statusRows = template.statuses.map((s) => {
       const id = generateId();
       statusNameToId[s.name] = id;
-      return { id, projectId: project.id, name: s.name, order: s.order, isDefault: s.isDefault, createdAt: now() };
+      return {
+        id,
+        projectId: project.id,
+        name: s.name,
+        order: s.order,
+        isDefault: s.isDefault,
+        // A template saved before schema v8 predates this field entirely (it's a plain JSON blob,
+        // not itself schema-migrated) — treat that as "not the done status" rather than storing
+        // `undefined` into a field typed as a real boolean.
+        isDone: s.isDone ?? false,
+        createdAt: now(),
+      };
     });
     await db.taskStatuses.bulkAdd(statusRows);
   } else {

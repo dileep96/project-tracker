@@ -57,20 +57,70 @@ export async function createTask(input: CreateTaskInput): Promise<Task> {
   return row;
 }
 
+/**
+ * Keeps a project's "done" status (`TaskStatus.isDone`, at most one per project, opt-in — see its
+ * doc comment in db.ts) and a task's `completedAt` checkbox in sync in both directions, the same
+ * way most Kanban-first trackers (Jira, Linear) treat "done" as a single status rather than two
+ * separate signals — this app used to keep them fully independent (see git history), but that
+ * surprised users coming from those tools. Only auto-derives the field the caller didn't already
+ * set explicitly, so an explicit `{ statusId, completedAt }` patch from a future caller always
+ * wins over this inference.
+ *
+ * - A real status change onto a project's done status checks the box (if it wasn't already).
+ * - A real status change *off* the done status unchecks it (if it was checked) — "reopening" a
+ *   task by dragging it off the Done column, the same way Jira-style boards behave.
+ * - Checking the box moves the task onto the done status, if the project has one configured and
+ *   the task isn't sitting on it already.
+ * - Unchecking the box deliberately does *not* move the status anywhere — there's no single
+ *   correct status to revert to, so it's left for the board/dropdown to move explicitly instead of
+ *   guessing at a "previous" status this app has never tracked.
+ */
+async function withDoneStatusSync(
+  before: Task,
+  patch: Partial<Omit<Task, "id" | "createdAt">>
+): Promise<Partial<Omit<Task, "id" | "createdAt">>> {
+  if (patch.statusId !== undefined && patch.statusId !== before.statusId && patch.completedAt === undefined) {
+    const statuses = await db.taskStatuses.where("projectId").equals(before.projectId).toArray();
+    const newStatus = statuses.find((s) => s.id === patch.statusId);
+    if (newStatus?.isDone && before.completedAt === null) {
+      return { ...patch, completedAt: now() };
+    }
+    if (newStatus && !newStatus.isDone && before.completedAt !== null) {
+      return { ...patch, completedAt: null };
+    }
+  } else if (
+    patch.completedAt !== undefined &&
+    patch.completedAt !== null &&
+    before.completedAt === null &&
+    patch.statusId === undefined
+  ) {
+    const statuses = await db.taskStatuses.where("projectId").equals(before.projectId).toArray();
+    const doneStatus = statuses.find((s) => s.isDone);
+    if (doneStatus && doneStatus.id !== before.statusId) {
+      return { ...patch, statusId: doneStatus.id };
+    }
+  }
+  return patch;
+}
+
 export async function updateTask(id: string, patch: Partial<Omit<Task, "id" | "createdAt">>): Promise<void> {
-  // Only fetched when the patch actually touches statusId (for automations) or a Phase 6 tracked
-  // field (for the activity log) — every other call site (e.g. a description edit) skips this
-  // extra read entirely.
-  const needsBefore = patch.statusId !== undefined || taskPatchTouchesTrackedFields(patch);
+  // Only fetched when the patch actually touches statusId/completedAt (for the done-status sync
+  // and automations) or a Phase 6 tracked field (for the activity log) — every other call site
+  // (e.g. a description edit) skips this extra read entirely.
+  const needsBefore =
+    patch.statusId !== undefined || patch.completedAt !== undefined || taskPatchTouchesTrackedFields(patch);
   const before = needsBefore ? await db.tasks.get(id) : undefined;
-  await db.tasks.update(id, { ...patch, updatedAt: now() });
-  if (before && patch.statusId !== undefined && patch.statusId !== before.statusId) {
+  const effectivePatch = before ? await withDoneStatusSync(before, patch) : patch;
+  await db.tasks.update(id, { ...effectivePatch, updatedAt: now() });
+  if (before && effectivePatch.statusId !== undefined && effectivePatch.statusId !== before.statusId) {
     const after = await db.tasks.get(id);
     if (after) void runStatusChangedAutomations(after, before.statusId);
   }
   // Fire-and-forget, same as the automation trigger above — an activity-log write shouldn't make
-  // every task edit wait on it.
-  if (before) void recordTaskFieldChanges(before, patch);
+  // every task edit wait on it. Logs the effective patch, so a sync-driven change (e.g. checking
+  // the box also moving the status) gets the same two-line audit trail a manual edit of both
+  // fields would.
+  if (before) void recordTaskFieldChanges(before, effectivePatch);
 }
 
 /**
