@@ -26,7 +26,21 @@ export interface ChatMessage {
   content: string | ChatContentPart[];
 }
 
-export type ChatCompletionResult = { ok: true; content: string; model: string } | { ok: false; error: string };
+/** OpenAI-compatible function-calling tool definition — the standard shape all three providers accept. */
+export interface ToolDef {
+  type: "function";
+  function: { name: string; description: string; parameters: Record<string, unknown> };
+}
+
+/** One model-proposed call, exactly as the provider returned it — `arguments` is a raw JSON string, not yet parsed or trusted (see actions.ts's validation layer, which is what turns this into something safe to act on). */
+export interface ToolCall {
+  id: string;
+  function: { name: string; arguments: string };
+}
+
+export type ChatCompletionResult =
+  | { ok: true; content: string; model: string; toolCalls?: ToolCall[] }
+  | { ok: false; error: string };
 
 interface PreparedRequest {
   url: string;
@@ -38,26 +52,31 @@ function trimSlash(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
-function prepareRequest(config: AiProviderConfig, messages: ChatMessage[], temperature: number): PreparedRequest {
+function prepareRequest(config: AiProviderConfig, messages: ChatMessage[], temperature: number, tools?: ToolDef[]): PreparedRequest {
+  // Omitted entirely (not even an empty array) when no caller passed tools — most call sites never
+  // need this, and an unnecessary `tools: []` field is one more thing a smaller local model's
+  // OpenAI-compat layer could mishandle. "auto" tool_choice is every provider's own default once
+  // `tools` is present, so it's never sent explicitly.
+  const toolFields = tools && tools.length > 0 ? { tools } : {};
   switch (config.provider) {
     case "lmstudio":
       return {
         url: `${trimSlash(config.lmstudio.baseUrl)}/chat/completions`,
         headers: { "Content-Type": "application/json" },
-        body: { model: config.lmstudio.model, messages, temperature },
+        body: { model: config.lmstudio.model, messages, temperature, ...toolFields },
       };
     case "openai":
       return {
         url: "https://api.openai.com/v1/chat/completions",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.openai.apiKey}` },
-        body: { model: config.openai.model, messages, temperature },
+        body: { model: config.openai.model, messages, temperature, ...toolFields },
       };
     case "azure":
       return {
         url: `${trimSlash(config.azure.endpoint)}/openai/deployments/${encodeURIComponent(config.azure.deployment)}/chat/completions?api-version=${encodeURIComponent(config.azure.apiVersion)}`,
         headers: { "Content-Type": "application/json", "api-key": config.azure.apiKey },
         // No "model" field — the deployment in the URL path IS the model selection for Azure OpenAI.
-        body: { messages, temperature },
+        body: { messages, temperature, ...toolFields },
       };
   }
 }
@@ -70,8 +89,12 @@ function describeFetchError(error: unknown, provider: AiProviderConfig["provider
   return error instanceof Error ? error.message : "Unknown error.";
 }
 
-export async function chatCompletion(config: AiProviderConfig, messages: ChatMessage[], opts?: { temperature?: number }): Promise<ChatCompletionResult> {
-  const { url, headers, body } = prepareRequest(config, messages, opts?.temperature ?? 0.3);
+export async function chatCompletion(
+  config: AiProviderConfig,
+  messages: ChatMessage[],
+  opts?: { temperature?: number; tools?: ToolDef[] }
+): Promise<ChatCompletionResult> {
+  const { url, headers, body } = prepareRequest(config, messages, opts?.temperature ?? 0.3, opts?.tools);
   try {
     const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
     if (!res.ok) {
@@ -79,9 +102,21 @@ export async function chatCompletion(config: AiProviderConfig, messages: ChatMes
       return { ok: false, error: `${res.status} ${res.statusText}${text ? ` — ${text.slice(0, 300)}` : ""}` };
     }
     const data = await res.json();
-    const content = data?.choices?.[0]?.message?.content;
-    if (typeof content !== "string") return { ok: false, error: "The response had no message content." };
-    return { ok: true, content, model: typeof data?.model === "string" ? data.model : "" };
+    const message = data?.choices?.[0]?.message;
+    const content = message?.content;
+    const rawToolCalls = message?.tool_calls;
+    const toolCalls: ToolCall[] | undefined = Array.isArray(rawToolCalls)
+      ? rawToolCalls
+          .filter((c: unknown): c is { id?: unknown; function?: { name?: unknown; arguments?: unknown } } => !!c && typeof c === "object")
+          .map((c) => ({
+            id: typeof c.id === "string" ? c.id : "",
+            function: { name: typeof c.function?.name === "string" ? c.function.name : "", arguments: typeof c.function?.arguments === "string" ? c.function.arguments : "{}" },
+          }))
+      : undefined;
+    // A tool-call response often carries no text content at all (content: null) — that's a normal,
+    // valid response shape when the model chose to act instead of reply, not a failure.
+    if (typeof content !== "string" && !toolCalls?.length) return { ok: false, error: "The response had no message content." };
+    return { ok: true, content: typeof content === "string" ? content : "", model: typeof data?.model === "string" ? data.model : "", toolCalls };
   } catch (error) {
     return { ok: false, error: describeFetchError(error, config.provider) };
   }

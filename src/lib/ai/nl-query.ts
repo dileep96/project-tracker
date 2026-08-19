@@ -65,7 +65,8 @@ function extractJsonObject(text: string): unknown {
   }
 }
 
-function parseLocalDate(value: unknown): number | null {
+/** Exported for actions.ts — the same YYYY-MM-DD parsing a tool-call's date arguments need, no reason to duplicate it. */
+export function parseLocalDate(value: unknown): number | null {
   if (typeof value !== "string") return null;
   const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!match) return null;
