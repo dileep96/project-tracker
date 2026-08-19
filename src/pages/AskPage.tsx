@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from "react";
-import { PaperPlaneRight, Paperclip, WarningCircle, X } from "@phosphor-icons/react";
+import { CircleNotch, PaperPlaneRight, Paperclip, WarningCircle, X } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { TaskTable } from "@/components/tasks/TaskTable";
@@ -16,6 +16,7 @@ import { buildQueryAnswerRequest, buildQueryResultRows, generateQueryAnswer } fr
 import { processAttachment, type ProcessedAttachment } from "@/lib/ai/attachments";
 import { interpretActionRequest, type ActionContext, type ValidatedProposal } from "@/lib/ai/actions";
 import { ActionProposalPanel } from "@/components/ai/ActionProposalPanel";
+import { TypingIndicator } from "@/components/ai/TypingIndicator";
 import type { ReportFilters, Task } from "@/lib/db";
 
 const EXAMPLE_QUESTIONS = ["What's overdue?", "High priority tasks", "Unassigned tasks", "Completed this month"];
@@ -33,6 +34,7 @@ export function AskPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [asking, setAsking] = useState(false);
+  const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
   const [answeredQuestion, setAnsweredQuestion] = useState<string | null>(null);
   const [filters, setFilters] = useState<ReportFilters | null>(null);
   const [rawResponse, setRawResponse] = useState<string | null>(null);
@@ -110,59 +112,63 @@ export function AskPage() {
     const trimmed = q.trim();
     if ((!trimmed && attachments.length === 0) || !config || !context) return;
     setAsking(true);
+    setPendingQuestion(trimmed || "(see attached file)");
+    // Clears every *previous* turn's result in one place — while a new question is in flight, the
+    // old answer/proposal/table disappears entirely in favor of the typing indicator below, rather
+    // than lingering stale next to it. Whichever of these the new turn actually needs gets set
+    // again below, once real data is back.
     setError(null);
     setAnswerText(null);
     setAnswerError(null);
     setProposals(null);
     setActionErrors(null);
+    setFilters(null);
+    setAnsweredQuestion(null);
 
-    // Action classification runs first, and only for typed questions (an attachment-only ask has
-    // nothing an action tool could reference). A plain question always falls through to the
-    // existing read-only flow below unchanged — this only short-circuits when the model actually
-    // proposes a create — so this step can never make an existing question behave differently.
-    if (trimmed && actionContext) {
-      const actionResult = await interpretActionRequest(config, trimmed, actionContext);
-      if (actionResult.kind === "action" || actionResult.kind === "rejected") {
-        // Clear any results left over from a *previous* plain question — otherwise an old filter
-        // table would keep showing underneath this unrelated action's proposal/error.
-        setFilters(null);
-        setRawResponse(null);
-        setAnsweredQuestion(trimmed);
-        if (actionResult.kind === "action") setProposals(actionResult.proposals);
-        else setActionErrors(actionResult.errors);
-        setAsking(false);
+    try {
+      // Action classification runs first, and only for typed questions (an attachment-only ask has
+      // nothing an action tool could reference). A plain question always falls through to the
+      // existing read-only flow below unchanged — this only short-circuits when the model actually
+      // proposes a create — so this step can never make an existing question behave differently.
+      if (trimmed && actionContext) {
+        const actionResult = await interpretActionRequest(config, trimmed, actionContext);
+        if (actionResult.kind === "action" || actionResult.kind === "rejected") {
+          setAnsweredQuestion(trimmed);
+          if (actionResult.kind === "action") setProposals(actionResult.proposals);
+          else setActionErrors(actionResult.errors);
+          return;
+        }
+        // "no-action" or "error" — fall through to the ordinary question flow below.
+      }
+
+      const request = buildNlQueryRequest(trimmed, context, attachments);
+      const result = await interpretNlQuery(config, request, context);
+      if (!result.ok) {
+        setError(result.error);
+        setRawResponse(result.raw ?? null);
         return;
       }
-      // "no-action" or "error" — fall through to the ordinary question flow below.
-    }
 
-    const request = buildNlQueryRequest(trimmed, context, attachments);
-    const result = await interpretNlQuery(config, request, context);
-    if (!result.ok) {
-      setError(result.error);
-      setRawResponse(result.raw ?? null);
+      setFilters(result.filters);
+      setRawResponse(result.raw);
+      setAnsweredQuestion(trimmed);
+
+      // Second, separate call — see lib/ai/query-answer.ts: only ever shown the tasks that just
+      // matched the filter above, never asked to describe results it hasn't been given.
+      const matched = tasks ? applyReportFilters(tasks, result.filters, statusName) : [];
+      const rows = buildQueryResultRows(matched, projectName, statusName);
+      const answerRequest = buildQueryAnswerRequest(trimmed || "(see attached file)", rows, matched.length);
+      const answerResult = await generateQueryAnswer(config, answerRequest.messages);
+      if (answerResult.ok) {
+        setAnswerText(answerResult.answer);
+      } else {
+        setAnswerError(answerResult.error);
+      }
+      setAnswerSentText(JSON.stringify(answerRequest.messages, null, 2));
+    } finally {
       setAsking(false);
-      return;
+      setPendingQuestion(null);
     }
-
-    setFilters(result.filters);
-    setRawResponse(result.raw);
-    setAnsweredQuestion(trimmed);
-
-    // Second, separate call — see lib/ai/query-answer.ts: only ever shown the tasks that just
-    // matched the filter above, never asked to describe results it hasn't been given.
-    const matched = tasks ? applyReportFilters(tasks, result.filters, statusName) : [];
-    const rows = buildQueryResultRows(matched, projectName, statusName);
-    const answerRequest = buildQueryAnswerRequest(trimmed || "(see attached file)", rows, matched.length);
-    const answerResult = await generateQueryAnswer(config, answerRequest.messages);
-    if (answerResult.ok) {
-      setAnswerText(answerResult.answer);
-    } else {
-      setAnswerError(answerResult.error);
-    }
-    setAnswerSentText(JSON.stringify(answerRequest.messages, null, 2));
-
-    setAsking(false);
   }
 
   if (config === undefined || loading) {
@@ -219,7 +225,7 @@ export function AskPage() {
                 <Paperclip />
               </Button>
               <Button type="submit" disabled={asking || (!question.trim() && attachments.length === 0)}>
-                <PaperPlaneRight /> {asking ? "Thinking…" : "Ask"}
+                {asking ? <CircleNotch className="animate-spin" /> : <PaperPlaneRight />} {asking ? "Thinking…" : "Ask"}
               </Button>
             </div>
 
@@ -246,7 +252,7 @@ export function AskPage() {
             {attachError && <p className="text-xs text-health-red-fg">{attachError}</p>}
           </form>
 
-          {!answeredQuestion && !error && (
+          {!asking && !answeredQuestion && !error && (
             <div className="flex flex-wrap gap-1.5">
               {EXAMPLE_QUESTIONS.map((q) => (
                 <button
@@ -264,72 +270,87 @@ export function AskPage() {
             </div>
           )}
 
-          {error && (
-            <div className="flex items-start gap-2 rounded-lg border border-health-red-fg/30 bg-health-red-bg p-3 text-sm text-health-red-fg">
-              <WarningCircle className="mt-0.5 size-4 shrink-0" />
-              <span className="min-w-0 break-words">{error}</span>
+          {asking && pendingQuestion && (
+            <div className="flex flex-col gap-2 animate-in fade-in-0 duration-200">
+              <p className="text-xs text-muted-foreground">"{pendingQuestion}"</p>
+              <TypingIndicator />
             </div>
           )}
 
-          {actionErrors && (
-            <div className="flex items-start gap-2 rounded-lg border border-health-red-fg/30 bg-health-red-bg p-3 text-sm text-health-red-fg">
-              <WarningCircle className="mt-0.5 size-4 shrink-0" />
-              <div className="min-w-0 break-words">
-                <p>The AI tried to make a change, but it didn't check out:</p>
-                <ul className="mt-1 list-disc pl-4">
-                  {actionErrors.map((e, i) => (
-                    <li key={i}>{e}</li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          )}
-
-          {proposals && answeredQuestion && <ActionProposalPanel proposals={proposals} question={answeredQuestion} />}
-
-          {answeredQuestion && filters && (
-            <div className="flex flex-col gap-3">
-              <div className="rounded-lg border border-border bg-card p-3">
-                <p className="text-xs text-muted-foreground">
-                  "{answeredQuestion}" →{" "}
-                  <span className="font-medium text-foreground">{describeFilters(filters)}</span>
-                </p>
-              </div>
-
-              {answerText && <p className="text-sm leading-relaxed">{answerText}</p>}
-              {answerError && <p className="text-xs text-muted-foreground">Couldn't write a summary: {answerError}</p>}
-
-              <p className="text-xs text-muted-foreground">
-                {results.length} task{results.length === 1 ? "" : "s"} match
-              </p>
-              <TaskTable
-                tasks={results}
-                statusesForProject={statusesForProject}
-                onOpenTask={setOpenTaskId}
-                showProjectColumn
-                projectsById={projectsById}
-                emptyMessage="No tasks match this question."
-              />
-              {(rawResponse || answerSentText) && (
-                <details className="rounded-lg border border-border/60 text-xs">
-                  <summary className="cursor-pointer px-3 py-2 font-medium text-muted-foreground select-none">What was sent and returned</summary>
-                  <div className="max-h-56 overflow-auto border-t border-border/60 p-3">
-                    {rawResponse && (
-                      <>
-                        <p className="mb-1 font-medium text-muted-foreground">Filter model's raw response</p>
-                        <pre className="mb-3 font-mono whitespace-pre-wrap text-muted-foreground">{rawResponse}</pre>
-                      </>
-                    )}
-                    {answerSentText && (
-                      <>
-                        <p className="mb-1 font-medium text-muted-foreground">Sent for the written answer</p>
-                        <pre className="font-mono whitespace-pre-wrap text-muted-foreground">{answerSentText}</pre>
-                      </>
-                    )}
-                  </div>
-                </details>
+          {!asking && (
+            <>
+              {error && (
+                <div className="flex animate-in items-start gap-2 rounded-lg border border-health-red-fg/30 bg-health-red-bg p-3 text-sm text-health-red-fg fade-in-0 duration-200">
+                  <WarningCircle className="mt-0.5 size-4 shrink-0" />
+                  <span className="min-w-0 break-words">{error}</span>
+                </div>
               )}
-            </div>
+
+              {actionErrors && (
+                <div className="flex animate-in items-start gap-2 rounded-lg border border-health-red-fg/30 bg-health-red-bg p-3 text-sm text-health-red-fg fade-in-0 duration-200">
+                  <WarningCircle className="mt-0.5 size-4 shrink-0" />
+                  <div className="min-w-0 break-words">
+                    <p>The AI tried to make a change, but it didn't check out:</p>
+                    <ul className="mt-1 list-disc pl-4">
+                      {actionErrors.map((e, i) => (
+                        <li key={i}>{e}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
+
+              {proposals && answeredQuestion && (
+                <div className="animate-in fade-in-0 duration-200">
+                  <ActionProposalPanel proposals={proposals} question={answeredQuestion} />
+                </div>
+              )}
+
+              {answeredQuestion && filters && (
+                <div className="flex animate-in flex-col gap-3 fade-in-0 duration-200">
+                  <div className="rounded-lg border border-border bg-card p-3">
+                    <p className="text-xs text-muted-foreground">
+                      "{answeredQuestion}" →{" "}
+                      <span className="font-medium text-foreground">{describeFilters(filters)}</span>
+                    </p>
+                  </div>
+
+                  {answerText && <p className="text-sm leading-relaxed">{answerText}</p>}
+                  {answerError && <p className="text-xs text-muted-foreground">Couldn't write a summary: {answerError}</p>}
+
+                  <p className="text-xs text-muted-foreground">
+                    {results.length} task{results.length === 1 ? "" : "s"} match
+                  </p>
+                  <TaskTable
+                    tasks={results}
+                    statusesForProject={statusesForProject}
+                    onOpenTask={setOpenTaskId}
+                    showProjectColumn
+                    projectsById={projectsById}
+                    emptyMessage="No tasks match this question."
+                  />
+                  {(rawResponse || answerSentText) && (
+                    <details className="rounded-lg border border-border/60 text-xs">
+                      <summary className="cursor-pointer px-3 py-2 font-medium text-muted-foreground select-none">What was sent and returned</summary>
+                      <div className="max-h-56 overflow-auto border-t border-border/60 p-3">
+                        {rawResponse && (
+                          <>
+                            <p className="mb-1 font-medium text-muted-foreground">Filter model's raw response</p>
+                            <pre className="mb-3 font-mono whitespace-pre-wrap text-muted-foreground">{rawResponse}</pre>
+                          </>
+                        )}
+                        {answerSentText && (
+                          <>
+                            <p className="mb-1 font-medium text-muted-foreground">Sent for the written answer</p>
+                            <pre className="font-mono whitespace-pre-wrap text-muted-foreground">{answerSentText}</pre>
+                          </>
+                        )}
+                      </div>
+                    </details>
+                  )}
+                </div>
+              )}
+            </>
           )}
         </>
       )}
