@@ -20,10 +20,12 @@ import { EditableTextCell } from "@/components/tasks/cells/EditableTextCell";
 import { DateCell } from "@/components/tasks/cells/DateCell";
 import { TagsCell } from "@/components/tasks/cells/TagsCell";
 import { EstimateCell } from "@/components/tasks/cells/EstimateCell";
+import { MoveTasksDialog } from "@/components/tasks/MoveTasksDialog";
 import { TASK_PRIORITIES, type Project, type Task, type TaskPriority, type TaskStatus } from "@/lib/db";
 import { cn } from "@/lib/utils";
 import { deleteTask, setTaskCompleted, updateTask } from "@/lib/queries/tasks";
 import { useCurrentRole } from "@/hooks/use-role";
+import { useProjects } from "@/hooks/use-projects";
 import { hasPermission } from "@/lib/permissions";
 
 type SortKey = "title" | "status" | "priority" | "startDate" | "dueDate" | "project" | "createdAt";
@@ -64,7 +66,10 @@ export function TaskTable({
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [page, setPage] = useState(0);
   const [pendingDelete, setPendingDelete] = useState<Task | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const role = useCurrentRole();
+  const projects = useProjects();
 
   const statusName = useCallback(
     (task: Task) => statusesForProject(task.projectId).find((s) => s.id === task.statusId)?.name ?? "",
@@ -139,6 +144,29 @@ export function TaskTable({
   const pageCount = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const currentPage = Math.min(page, pageCount - 1);
   const pageRows = sorted.slice(currentPage * PAGE_SIZE, currentPage * PAGE_SIZE + PAGE_SIZE);
+
+  const pageAllSelected = pageRows.length > 0 && pageRows.every((t) => selectedIds.has(t.id));
+  const pageSomeSelected = !pageAllSelected && pageRows.some((t) => selectedIds.has(t.id));
+
+  function toggleRowSelected(taskId: string, checked: boolean) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(taskId);
+      else next.delete(taskId);
+      return next;
+    });
+  }
+
+  function togglePageSelected(checked: boolean) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const t of pageRows) {
+        if (checked) next.add(t.id);
+        else next.delete(t.id);
+      }
+      return next;
+    });
+  }
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) {
@@ -259,11 +287,37 @@ export function TaskTable({
         </span>
       </div>
 
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2">
+          <span className="text-sm font-medium">
+            {selectedIds.size} task{selectedIds.size === 1 ? "" : "s"} selected
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!hasPermission(role, "task:edit") || (projects ?? []).length === 0}
+            onClick={() => setMoveDialogOpen(true)}
+          >
+            Move to project…
+          </Button>
+          <Button size="sm" variant="ghost" className="ml-auto" onClick={() => setSelectedIds(new Set())}>
+            Clear selection
+          </Button>
+        </div>
+      )}
+
       {/* Table */}
       <div className="overflow-x-auto rounded-lg border border-border">
         <Table>
           <TableHeader>
             <TableRow className="hover:bg-transparent">
+              <TableHead className="w-9">
+                <Checkbox
+                  checked={pageAllSelected ? true : pageSomeSelected ? "indeterminate" : false}
+                  onCheckedChange={(checked) => togglePageSelected(checked === true)}
+                  aria-label={pageAllSelected ? "Deselect all on this page" : "Select all on this page"}
+                />
+              </TableHead>
               <TableHead className="w-9" />
               <SortHeader label="Title" sortKeyName="title" className="min-w-48" />
               <SortHeader label="Status" sortKeyName="status" className="w-32" />
@@ -282,7 +336,7 @@ export function TaskTable({
           <TableBody>
             {pageRows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={showProjectColumn ? 11 : 10} className="py-10 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={showProjectColumn ? 12 : 11} className="py-10 text-center text-sm text-muted-foreground">
                   {emptyMessage}
                 </TableCell>
               </TableRow>
@@ -293,6 +347,13 @@ export function TaskTable({
                 const statuses = statusesForProject(task.projectId);
                 return (
                   <TableRow key={task.id} className="group">
+                    <TableCell>
+                      <Checkbox
+                        checked={selectedIds.has(task.id)}
+                        onCheckedChange={(checked) => toggleRowSelected(task.id, checked === true)}
+                        aria-label={selectedIds.has(task.id) ? "Deselect task" : "Select task"}
+                      />
+                    </TableCell>
                     <TableCell>
                       <Checkbox
                         checked={completed}
@@ -410,6 +471,14 @@ export function TaskTable({
           await deleteTask(pendingDelete.id);
           toast.success("Task deleted");
         }}
+      />
+
+      <MoveTasksDialog
+        open={moveDialogOpen}
+        onOpenChange={setMoveDialogOpen}
+        taskIds={Array.from(selectedIds)}
+        projects={projects ?? []}
+        onDone={() => setSelectedIds(new Set())}
       />
     </div>
   );
