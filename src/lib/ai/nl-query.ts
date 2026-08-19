@@ -1,7 +1,8 @@
 import type { AiProviderConfig, Project, ReportFilters, Task, TaskPriority } from "@/lib/db";
 import { TASK_PRIORITIES } from "@/lib/db";
 import { EMPTY_REPORT_FILTERS } from "@/lib/analytics/report";
-import { chatCompletion, type ChatMessage } from "@/lib/ai/client";
+import { chatCompletion, type ChatContentPart, type ChatMessage } from "@/lib/ai/client";
+import type { ProcessedAttachment } from "@/lib/ai/attachments";
 
 export interface NlQueryContext {
   projects: { id: string; name: string }[];
@@ -104,12 +105,29 @@ export interface NlQueryRequest {
   messages: ChatMessage[];
 }
 
-export function buildNlQueryRequest(question: string, context: NlQueryContext): NlQueryRequest {
+/**
+ * When attachments are given, the user message becomes a multi-part `content` — the question's
+ * own text, any PDF text appended after it (a PDF is just more text as far as the model's
+ * concerned), and one `image_url` part per image. Text-only questions (no attachments, the common
+ * case, and every call site before Phase A) keep the plain string `content` unchanged.
+ */
+export function buildNlQueryRequest(question: string, context: NlQueryContext, attachments: ProcessedAttachment[] = []): NlQueryRequest {
+  const pdfText = attachments
+    .filter((a) => a.kind === "text")
+    .map((a) => `\n\n[Attached file "${a.name}"]\n${a.text}`)
+    .join("");
+  const images = attachments.filter((a) => a.kind === "image");
+
+  const userContent: string | ChatContentPart[] =
+    images.length === 0
+      ? question + pdfText
+      : [{ type: "text", text: question + pdfText }, ...images.map((img) => ({ type: "image_url" as const, image_url: { url: img.dataUrl } }))];
+
   return {
     question,
     messages: [
       { role: "system", content: buildSystemPrompt(context) },
-      { role: "user", content: question },
+      { role: "user", content: userContent },
     ],
   };
 }
